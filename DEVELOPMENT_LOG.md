@@ -804,3 +804,39 @@ Statuses are always text plus a symbol, never colour alone (`StatusBadge`).
 scripted test fakes, separate `storage_dev_fake/`), because the Gemini API returned 503:
 all four pages load; the planted fabricated claim shows as "Unsupported — quote not found";
 the assistant answer shows a page citation. Frontend tests 4/4, build OK.
+
+---
+
+## Step 8: Evaluation and README (2026-11-05, Amendment A1)
+
+**Done:**
+- `evaluation/retrieval_tests.py`: semantic vs BM25 vs hybrid (RRF), P@5, R@5, MRR, with
+  section-level relevance labels.
+- `evaluation/verification_tests.py`: accuracy, precision/recall for "supported",
+  confusion counts, **false acceptance rate** and false rejection rate on labelled
+  claim/quote pairs.
+- Label files in `evaluation/ground_truth/` for arXiv:1706.03762: 12 retrieval queries and
+  12 claim/quote pairs. **These are DRAFT labels written by the development assistant and
+  must be reviewed by a person before any result is reported (spec §18.1).**
+- README rewritten: install, run, demo steps, API list, tests, evaluation, limitations.
+
+**Results so far (1 paper, draft labels — preliminary, not for reporting yet):**
+
+| Retriever (12 queries, K=5) | P@5 | R@5 | MRR |
+|---|---|---|---|
+| Semantic | 0.417 | 0.900 | 0.861 |
+| BM25 | 0.350 | 0.692 | 0.662 |
+| Hybrid (RRF) | 0.383 | 0.775 | 0.861 |
+
+On this small draft set hybrid retrieval did **not** beat semantic retrieval (equal MRR,
+lower recall). P@5 is bounded because many relevant sections have only 1–2 chunks.
+
+Verification evaluation could not run: Gemini (`gemini-3.8-flash`) returned 503 for every
+call; all 12 pairs stayed `pending` (none marked verified by default).
+
+**Still open to finish the reduced scope:**
+- A person reviews the draft labels; add 2–4 more public papers with reviewed labels
+  (A1 asks for 3–5).
+- Re-run `scripts/verify_gemini.py`, one full analysis, and `verification_tests.py` when
+  the API responds (or with OpenRouter credit).
+- Measured end-to-end timing of a real analysis on the 3-call design.

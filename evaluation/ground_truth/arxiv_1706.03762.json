@@ -1,0 +1,20 @@
+{
+  "paper": "arxiv_1706.03762.pdf",
+  "title": "Attention Is All You Need",
+  "label_status": "DRAFT - written by the development assistant; must be reviewed by a human annotator before results are reported (spec 18.1)",
+  "relevance_unit": "A retrieved chunk is relevant if its section is one of relevant_sections.",
+  "retrieval_queries": [
+    {"query": "What optimizer and learning rate schedule were used for training?", "relevant_sections": ["Optimizer"]},
+    {"query": "How many GPUs were used and how long did training take?", "relevant_sections": ["Hardware and Schedule"]},
+    {"query": "Which datasets were used to train the translation models?", "relevant_sections": ["Training Data and Batching"]},
+    {"query": "What BLEU score did the model get on English-to-German translation?", "relevant_sections": ["Machine Translation"]},
+    {"query": "How does scaled dot-product attention compute its output?", "relevant_sections": ["Scaled Dot-Product Attention"]},
+    {"query": "Why use multiple attention heads instead of one?", "relevant_sections": ["Multi-Head Attention"]},
+    {"query": "How are positions of tokens encoded without recurrence?", "relevant_sections": ["Positional Encoding"]},
+    {"query": "Why is self-attention preferred over recurrent and convolutional layers?", "relevant_sections": ["Why Self-Attention"]},
+    {"query": "What regularization methods such as dropout and label smoothing were applied?", "relevant_sections": ["Regularization"]},
+    {"query": "How well does the model generalize to English constituency parsing?", "relevant_sections": ["English Constituency Parsing"]},
+    {"query": "What happens when the number of attention heads or key size is varied?", "relevant_sections": ["Model Variations"]},
+    {"query": "How many layers do the encoder and decoder stacks have?", "relevant_sections": ["Encoder and Decoder Stacks"]}
+  ]
+}

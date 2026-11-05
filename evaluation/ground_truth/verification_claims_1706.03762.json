@@ -1,0 +1,19 @@
+{
+  "paper": "arxiv_1706.03762.pdf",
+  "label_status": "DRAFT - claim/quote pairs and gold labels written by the development assistant; must be reviewed by a human annotator before results are reported (spec 18.1, 18.4)",
+  "note": "Quotes are short excerpts of the paper, used only as test evidence. 'supported' = verified; 'unsupported' covers unsupported or contradicted.",
+  "pairs": [
+    {"claim": "The Transformer uses the Adam optimizer.", "quote": "We used the Adam optimizer", "gold": "supported"},
+    {"claim": "The Transformer uses stochastic gradient descent with momentum.", "quote": "We used the Adam optimizer", "gold": "unsupported"},
+    {"claim": "The models were trained on 8 NVIDIA P100 GPUs.", "quote": "We trained our models on one machine with 8 NVIDIA P100 GPUs.", "gold": "supported"},
+    {"claim": "The models were trained on 16 TPUs.", "quote": "We trained our models on one machine with 8 NVIDIA P100 GPUs.", "gold": "unsupported"},
+    {"claim": "The encoder is a stack of 6 identical layers.", "quote": "The encoder is composed of a stack of N = 6 identical layers.", "gold": "supported"},
+    {"claim": "The encoder is a stack of 12 identical layers.", "quote": "The encoder is composed of a stack of N = 6 identical layers.", "gold": "unsupported"},
+    {"claim": "The model uses residual connections around each sub-layer.", "quote": "We employ a residual connection around each of the two sub-layers, followed by layer normalization.", "gold": "supported"},
+    {"claim": "The model dispenses with recurrence and convolutions entirely.", "quote": "based solely on attention mechanisms, dispensing with recurrence and convolutions entirely", "gold": "supported"},
+    {"claim": "The model relies on recurrent layers to model sequence order.", "quote": "based solely on attention mechanisms, dispensing with recurrence and convolutions entirely", "gold": "unsupported"},
+    {"claim": "Label smoothing was used during training.", "quote": "During training, we employed label smoothing of value", "gold": "supported"},
+    {"claim": "Label smoothing improved perplexity.", "quote": "This hurts perplexity, as the model learns to be more unsure, but improves accuracy and BLEU score.", "gold": "unsupported"},
+    {"claim": "The model uses sinusoidal positional encodings.", "quote": "we use sine and cosine functions of different frequencies", "gold": "supported"}
+  ]
+}
