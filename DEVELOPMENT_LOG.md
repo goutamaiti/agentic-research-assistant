@@ -871,3 +871,30 @@ The Phase 3 acceptance item "model access and API method verified" is now met.
 
 **Remaining before submission:** human review of the draft labels and 2–4 more papers
 (A1); optional OpenRouter credit if that route is wanted.
+
+## Deployment: Hugging Face Spaces (2026-11-06)
+
+Vercel was considered and rejected for the backend: its serverless functions cannot hold
+PyTorch + the embedding model, have no persistent disk for SQLite/ChromaDB/uploads, and
+stop after the response, which breaks the background analysis job. The frontend alone
+could go there, but it gains nothing over serving it from the backend.
+
+Added:
+- `Dockerfile` (node build stage + python:3.12-slim; CPU-only torch; Tesseract; embedding
+  model downloaded at build time, `HF_HUB_OFFLINE=1` at run time; user 1000; port 7860)
+  and `.dockerignore` (no secrets, local data, PDFs, tests or evaluation data).
+- Optional `ACCESS_PASSWORD`: when set, all `/api` calls except `/api/health` and report
+  downloads (random 128-bit IDs) need the `X-Access-Password` header (constant-time
+  comparison); the UI shows a password form on `access_denied` and keeps the password in
+  this browser's localStorage (memory fallback). Off by default, so local use is unchanged.
+- `deploy/huggingface/push_space.py` (+ `deploy.bat`): creates the Docker Space if needed
+  and uploads only git-tracked files the image needs, replacing README.md with the Space
+  card (`deploy/huggingface/README.md`); `--secrets` stores the Gemini key and password as
+  Space secrets via hidden prompts. `.github/workflows/deploy-huggingface.yml` redeploys
+  on push when `HF_TOKEN`/`HF_SPACE` are configured.
+
+Tests: 343 backend passed (2 integration skipped), 5 frontend passed; ruff clean;
+`push_space.py --dry-run` lists 85 files. Not yet verified: the Docker build itself
+(Docker is not installed on this machine) and a live Space; the first Space build is the
+real test.
+

@@ -9,6 +9,7 @@ and configures logging, which must not happen merely because a module was import
 
 from __future__ import annotations
 
+import hmac
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -75,6 +76,33 @@ def _register_error_handlers(app: FastAPI) -> None:
     async def unhandled_error(request: Request, exc: Exception) -> JSONResponse:
         logger.exception("Unhandled error on %s %s", request.method, request.url.path)
         return _error(500, "internal_error", "An unexpected server error occurred.")
+
+
+ACCESS_HEADER = "X-Access-Password"
+
+
+def _register_access_check(app: FastAPI, settings: Settings) -> None:
+    """Require the shared password on API calls when ACCESS_PASSWORD is set.
+
+    Open: the health check (the UI uses it before anyone has typed the password) and
+    report downloads, whose IDs are random 128-bit values only handed out to callers
+    who already passed this check. The static frontend itself is public; it holds no data.
+    """
+    if settings.access_password is None:
+        return
+    expected = settings.access_password.get_secret_value().encode()
+
+    @app.middleware("http")
+    async def access_check(request: Request, call_next: Any) -> Any:
+        path = request.url.path
+        open_path = path == "/api/health" or (
+            request.method == "GET" and path.startswith("/api/reports/")
+        )
+        if path.startswith("/api/") and not open_path and request.method != "OPTIONS":
+            given = request.headers.get(ACCESS_HEADER, "").encode()
+            if not hmac.compare_digest(given, expected):
+                return _error(401, "access_denied", "This deployment needs its access password.")
+        return await call_next(request)
 
 
 def _mount_frontend(app: FastAPI) -> None:
@@ -194,9 +222,10 @@ def create_app(
         CORSMiddleware,
         allow_origins=settings.cors_origins,
         allow_methods=["GET", "POST", "DELETE"],
-        allow_headers=["Content-Type"],
+        allow_headers=["Content-Type", ACCESS_HEADER],
     )
     _register_error_handlers(app)
+    _register_access_check(app, settings)
     app.include_router(health.router, prefix="/api")
     app.include_router(documents.router, prefix="/api")
     app.include_router(analysis.router, prefix="/api")

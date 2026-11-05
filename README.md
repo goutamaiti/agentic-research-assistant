@@ -31,6 +31,35 @@ PyTorch installs very deep file paths, and Windows refuses paths over 260 charac
 [long paths are enabled](https://pip.pypa.io/warnings/enable-long-paths); `run.bat` checks
 this and tells you if the folder needs moving.
 
+## Put it online (Hugging Face Spaces)
+
+The repository includes a `Dockerfile` that runs the whole app in one container
+(API + web interface, Tesseract included, embedding model baked in). Free Hugging Face
+Space hardware (2 CPUs, 16 GB RAM) is enough.
+
+1. Create a free account at [huggingface.co](https://huggingface.co/join) and an
+   [access token](https://huggingface.co/settings/tokens) with **write** permission.
+2. Run `run.bat` once (it sets up Python), then double-click
+   **`deploy\huggingface\deploy.bat`**. It asks for a Space name such as
+   `yourname/agentic-research-assistant`, your token (first time only), your Gemini
+   key and an **access password** for visitors, then uploads the project.
+   macOS/Linux: `backend/.venv/bin/python deploy/huggingface/push_space.py --space yourname/agentic-research-assistant --secrets`.
+3. Hugging Face builds the image (about 10 minutes) and the app appears at
+   `https://huggingface.co/spaces/yourname/agentic-research-assistant`. Share the link
+   and the password.
+
+Things to know:
+- **Set an access password.** Without one, anyone with the link spends your Gemini credit.
+  The key and password are stored as Space *secrets* and never appear in the code.
+- **Data is temporary on free hardware.** Uploaded papers and analyses disappear when the
+  Space restarts or sleeps (after 48 hours without visitors). For lasting data, add
+  persistent storage in the Space settings and set the variable `STORAGE_DIR=/data`.
+- **Automatic redeploys (optional):** add a GitHub secret `HF_TOKEN` and a variable
+  `HF_SPACE` (Settings → Secrets and variables → Actions); every push to `master` then
+  updates the Space (`.github/workflows/deploy-huggingface.yml`).
+- The same image runs anywhere Docker does:
+  `docker build -t ara . && docker run -p 7860:7860 -e GEMINI_API_KEY=... ara`.
+
 ## How it works
 
 ```text

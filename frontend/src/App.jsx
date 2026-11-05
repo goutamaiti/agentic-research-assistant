@@ -3,11 +3,39 @@ import AnalysisPage from './pages/AnalysisPage.jsx'
 import AssistantPage from './pages/AssistantPage.jsx'
 import EvidencePage from './pages/EvidencePage.jsx'
 import UploadPage from './pages/UploadPage.jsx'
+import { ACCESS_REQUIRED_EVENT, setAccessPassword } from './services/api.js'
 
 // Minimal hash routing: #/ , #/analysis/<id>, #/evidence/<id>, #/assistant/<id>.
 function parseHash() {
   const [page = '', documentId = null] = window.location.hash.replace(/^#\/?/, '').split('/')
   return { page, documentId }
+}
+
+function AccessForm() {
+  const [value, setValue] = useState('')
+  const submit = (event) => {
+    event.preventDefault()
+    setAccessPassword(value)
+    window.location.reload()
+  }
+  return (
+    <form onSubmit={submit} className="mx-auto max-w-sm rounded-lg border border-slate-200 bg-white p-6">
+      <h2 className="text-lg font-semibold">Access password</h2>
+      <p className="mt-1 text-sm text-slate-600">This deployment is protected. Enter the password you were given.</p>
+      <label htmlFor="access-password" className="mt-4 block text-sm font-medium">Password</label>
+      <input
+        id="access-password"
+        type="password"
+        autoComplete="current-password"
+        value={value}
+        onChange={(event) => setValue(event.target.value)}
+        className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2"
+      />
+      <button type="submit" disabled={!value} className="mt-4 rounded-md bg-slate-900 px-4 py-2 text-sm text-white disabled:opacity-50">
+        Continue
+      </button>
+    </form>
+  )
 }
 
 const TABS = [
@@ -18,6 +46,13 @@ const TABS = [
 
 export default function App() {
   const [route, setRoute] = useState(parseHash)
+  const [needsPassword, setNeedsPassword] = useState(false)
+
+  useEffect(() => {
+    const onDenied = () => setNeedsPassword(true)
+    window.addEventListener(ACCESS_REQUIRED_EVENT, onDenied)
+    return () => window.removeEventListener(ACCESS_REQUIRED_EVENT, onDenied)
+  }, [])
 
   useEffect(() => {
     const onChange = () => setRoute(parseHash())
@@ -34,6 +69,7 @@ export default function App() {
   if (documentId && page === 'analysis') content = <AnalysisPage documentId={documentId} />
   if (documentId && page === 'evidence') content = <EvidencePage documentId={documentId} />
   if (documentId && page === 'assistant') content = <AssistantPage documentId={documentId} />
+  if (needsPassword) content = <AccessForm />
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900">

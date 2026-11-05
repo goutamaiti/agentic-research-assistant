@@ -10,13 +10,37 @@ export class ApiError extends Error {
   }
 }
 
+// Optional shared password of a public deployment (ACCESS_PASSWORD on the server).
+// Kept for this browser only; never part of the bundle.
+const PASSWORD_KEY = 'ara-access-password'
+let memoryPassword = ''
+
+export function getAccessPassword() {
+  try {
+    return window.localStorage.getItem(PASSWORD_KEY) ?? memoryPassword
+  } catch {
+    return memoryPassword
+  }
+}
+
+export function setAccessPassword(value) {
+  memoryPassword = value
+  try {
+    window.localStorage.setItem(PASSWORD_KEY, value)
+  } catch {
+    // Storage blocked (private window, embedded frame): keep it for this page only.
+  }
+}
+
+export const ACCESS_REQUIRED_EVENT = 'ara:access-required'
+
 export async function request(path, { fetchImpl = fetch, ...init } = {}) {
+  const password = getAccessPassword()
+  const headers = { Accept: 'application/json', ...(init.headers ?? {}) }
+  if (password) headers['X-Access-Password'] = password
   let response
   try {
-    response = await fetchImpl(`/api${path}`, {
-      headers: { Accept: 'application/json' },
-      ...init,
-    })
+    response = await fetchImpl(`/api${path}`, { ...init, headers })
   } catch {
     throw new ApiError('Cannot reach the backend. Is the API server running?')
   }
@@ -29,6 +53,9 @@ export async function request(path, { fetchImpl = fetch, ...init } = {}) {
   }
 
   if (!response.ok) {
+    if (body?.error?.code === 'access_denied' && typeof window !== 'undefined') {
+      window.dispatchEvent(new Event(ACCESS_REQUIRED_EVENT))
+    }
     const message = body?.error?.message ?? `Request failed with status ${response.status}`
     throw new ApiError(message, {
       status: response.status,

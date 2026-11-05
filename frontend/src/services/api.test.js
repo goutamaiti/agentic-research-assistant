@@ -49,3 +49,16 @@ describe('getHealth', () => {
     await expect(getHealth({ fetchImpl })).rejects.toMatchObject({ code: 'invalid_response' })
   })
 })
+
+describe('access password', () => {
+  it('sends no password header unless one was entered', async () => {
+    const calls = []
+    const fetchImpl = async (url, init) => {
+      calls.push(init)
+      return jsonResponse(200, { status: 'ok' })
+    }
+    await getHealth({ fetchImpl })
+    expect(calls[0].headers['X-Access-Password']).toBeUndefined()
+    expect(calls[0].headers.Accept).toBe('application/json')
+  })
+})

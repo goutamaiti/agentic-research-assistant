@@ -48,6 +48,11 @@ class Settings(BaseSettings):
 
     max_upload_mb: int = Field(default=30, gt=0)
 
+    # Optional shared password for a public deployment: when set, every /api request
+    # (except health and report downloads by their random ID) must send it in the
+    # X-Access-Password header. Leave empty on your own computer.
+    access_password: SecretStr | None = None
+
     # The model is Gemini either way; "openrouter" reaches it through OpenRouter
     # (Amendment A2). "auto" picks OpenRouter for an OpenRouter key (sk-or-...).
     llm_provider: Literal["auto", "gemini", "openrouter"] = "auto"
@@ -101,7 +106,7 @@ class Settings(BaseSettings):
     def _upper_log_level(cls, value: object) -> object:
         return value.upper() if isinstance(value, str) else value
 
-    @field_validator("gemini_api_key", "openrouter_api_key", mode="before")
+    @field_validator("gemini_api_key", "openrouter_api_key", "access_password", mode="before")
     @classmethod
     def _blank_key_is_none(cls, value: object) -> object:
         if isinstance(value, str) and not value.strip():

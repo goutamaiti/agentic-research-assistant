@@ -1,0 +1,23 @@
+# Keep the build context small and free of secrets and local data.
+.git
+.github
+.claude
+**/.venv
+**/node_modules
+**/__pycache__
+**/.pytest_cache
+**/.ruff_cache
+frontend/dist
+**/.env
+**/.env.*
+!backend/.env.example
+storage/uploads/*
+storage/chroma/*
+storage/reports/*
+storage/database/*
+!storage/**/.gitkeep
+storage_dev_fake
+ResearchPapers
+evaluation
+backend/tests
+*.pdf

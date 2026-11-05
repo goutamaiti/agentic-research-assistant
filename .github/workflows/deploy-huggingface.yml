@@ -1,0 +1,22 @@
+# Optional: redeploy the Hugging Face Space on every push to master.
+# Enable it by adding, in GitHub > Settings > Secrets and variables > Actions:
+#   secret   HF_TOKEN  - a Hugging Face token with write permission
+#   variable HF_SPACE  - the Space ID, e.g. yourname/agentic-research-assistant
+name: Deploy to Hugging Face Space
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+jobs:
+  deploy:
+    if: vars.HF_SPACE != ''
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install huggingface_hub
+      - run: python deploy/huggingface/push_space.py --space "${{ vars.HF_SPACE }}"
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
