@@ -161,6 +161,9 @@ class Document(Base):
         passive_deletes=True,
         order_by="Extraction.id",
     )
+    conversations: Mapped[list[Conversation]] = relationship(
+        back_populates="document", cascade="all, delete-orphan", passive_deletes=True
+    )
 
 
 class DocumentPage(Base):
@@ -273,3 +276,42 @@ class Extraction(Base):
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
 
     document: Mapped[Document] = relationship(back_populates="extractions")
+
+
+class Conversation(Base):
+    """Chat history of one paper workspace (spec §10.6)."""
+
+    __tablename__ = "conversations"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    document_id: Mapped[str] = mapped_column(
+        ForeignKey("documents.id", ondelete="CASCADE"), index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, onupdate=utcnow)
+
+    document: Mapped[Document] = relationship(back_populates="conversations")
+    messages: Mapped[list[Message]] = relationship(
+        back_populates="conversation",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        order_by="Message.id",
+    )
+
+
+class Message(Base):
+    """One chat turn; assistant messages carry their citations (spec §10.7)."""
+
+    __tablename__ = "messages"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    conversation_id: Mapped[int] = mapped_column(
+        ForeignKey("conversations.id", ondelete="CASCADE"), index=True
+    )
+    role: Mapped[str] = mapped_column(String(16))  # "user" | "assistant"
+    content: Mapped[str] = mapped_column(Text)
+    citations_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    insufficient_evidence: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
+
+    conversation: Mapped[Conversation] = relationship(back_populates="messages")

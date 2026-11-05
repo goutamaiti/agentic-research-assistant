@@ -758,3 +758,27 @@ planted fabricated quote), 1 not verifiable.
 **Not done (A1):** targeted re-extraction for unsupported claims; recovery after an
 interrupted verification reports the document as `indexed` although its analysis exists.
 The real API is still untested for this step (Gemini returned 503).
+
+---
+
+## Step 6: Research assistant and export (2026-11-05, Amendment A1)
+
+**Done:**
+- `retrieval/hybrid_search.py`: semantic + BM25 rankings merged with Reciprocal Rank
+  Fusion (k=60), top 6 passages.
+- `agents/research_assistant.py`: one grounded LLM answer per question from the fused
+  passages (sanitised like extraction prompts), with the last 4 messages for follow-ups.
+  Citations are validated in code: unknown passage IDs are dropped, and an answer with no
+  valid citation becomes an explicit insufficient-evidence reply. General background is
+  returned separately (`general_explanation`), never mixed into the answer.
+- `conversations` and `messages` tables (migration `29155f5e8d18`); a conversation of
+  another paper cannot be reused (404).
+- Endpoints: `POST /api/documents/{id}/chat`, `GET /api/documents/{id}/chat/history`,
+  `POST /api/documents/{id}/report` (`json` | `pdf`), `GET /api/reports/{report_id}`.
+- PDF report (ReportLab): metadata, all categories, each claim with origin label,
+  verification status and page reference, verification summary, evidence list,
+  provenance. Missing categories say "not found" or "could not be processed".
+
+**Tests:** 340 passed, 2 skipped (`tests/test_assistant_and_reports.py`).
+
+**Not done (A1):** DOCX export; section filters in retrieval; reranker.

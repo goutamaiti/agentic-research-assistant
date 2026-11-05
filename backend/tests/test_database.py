@@ -32,6 +32,8 @@ EXPECTED_TABLES = {
     "document_chunks",
     "processing_runs",
     "extractions",
+    "conversations",
+    "messages",
 }
 
 

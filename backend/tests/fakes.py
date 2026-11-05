@@ -113,12 +113,18 @@ class FakeLLMTransport:
         self.responder = responder
         self.calls: list[dict] = []
         self.verification_calls: list[dict] = []
+        self.assistant_calls: list[dict] = []
 
     def generate(self, *, system_instruction, prompt, json_schema, temperature, max_output_tokens):
         import json
 
         from app.services.llm_service import LLMResponse, LLMUsage
 
+        if "cited_passage_ids" in json_schema["properties"]:
+            self.assistant_calls.append({"prompt": prompt, "system": system_instruction})
+            answer = self.responder("assistant", prompt, json_schema)
+            text = answer if isinstance(answer, str) else json.dumps(answer)
+            return LLMResponse(text=text, usage=LLMUsage(), model_version="fake-model-001")
         if "verdicts" in json_schema["properties"]:
             # Verification batches are recorded separately from extraction calls.
             self.verification_calls.append({"prompt": prompt, "system": system_instruction})

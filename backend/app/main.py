@@ -21,8 +21,9 @@ from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.agents.extraction_agent import ExtractionAgent
+from app.agents.research_assistant import ResearchAssistant
 from app.agents.verification_agent import VerificationAgent
-from app.api import analysis, documents, health
+from app.api import analysis, chat, documents, health, reports
 from app.config import APP_NAME, APP_VERSION, Settings, get_settings
 from app.database.connection import create_db_engine, create_session_factory
 from app.database.migrations import upgrade_database
@@ -154,6 +155,7 @@ def create_app(
                 extraction_agent=extraction_agent,
                 verification_agent=VerificationAgent(llm),
             )
+            app.state.research_assistant = ResearchAssistant(llm, chroma_client, app.state.embedder)
             app.state.analysis_service.recover()
             logger.info(
                 "Started %s %s (env=%s, llm_configured=%s, model=%s)",
@@ -180,4 +182,6 @@ def create_app(
     app.include_router(health.router, prefix="/api")
     app.include_router(documents.router, prefix="/api")
     app.include_router(analysis.router, prefix="/api")
+    app.include_router(chat.router, prefix="/api")
+    app.include_router(reports.router, prefix="/api")
     return app
