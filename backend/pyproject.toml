@@ -1,0 +1,26 @@
+[project]
+name = "agentic-research-assistant-backend"
+version = "0.1.0"
+description = "Single-paper agentic RAG research assistant (backend)"
+requires-python = ">=3.12"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+extend-exclude = [".venv", "alembic/versions"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "S"]
+ignore = []
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101", "S105", "S106"]
+
+[tool.ruff.lint.isort]
+# The local alembic/ migrations folder must not make the alembic package look first-party.
+known-third-party = ["alembic"]
+known-first-party = ["app"]

@@ -1,0 +1,26 @@
+# Runtime dependencies (direct, exact pins).
+# Verified together on Python 3.12.4 / Windows 11 on 2026-11-03 with `pip check`.
+# The full transitive set is frozen in requirements.lock.txt.
+
+# --- API / configuration / persistence (used from Phase 1) ---
+fastapi==0.162.0
+uvicorn[standard]==0.54.0
+pydantic==2.14.2
+pydantic-settings==2.16.2
+python-multipart==0.0.33
+sqlalchemy==2.1.6
+alembic==1.20.1
+chromadb==1.5.9
+
+# --- Installed now for compatibility verification; used from later phases ---
+google-genai==2.34.0
+langgraph==1.2.19
+langchain-core==1.7.4
+sentence-transformers==6.2.0
+torch==2.15.0
+pymupdf==2.1
+pytesseract==0.3.13
+pdfplumber==0.11.10
+rank-bm25==0.2.2
+reportlab==5.1.0
+python-docx==1.2.0
