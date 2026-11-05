@@ -9,6 +9,28 @@ against its sources, and answers questions about that paper with page citations.
   A2 OpenRouter route)
 - Work log, decisions, test results and limitations: [DEVELOPMENT_LOG.md](DEVELOPMENT_LOG.md)
 
+## Quick start (one click)
+
+1. Install **[Python 3.12+](https://www.python.org/downloads/)** (tick "Add python.exe to
+   PATH") and **[Node.js LTS](https://nodejs.org/)**.
+2. Get a **Gemini API key** from [Google AI Studio](https://aistudio.google.com/apikey)
+   (an OpenRouter key starting with `sk-or-` also works).
+3. Download this repository (green **Code** button → *Download ZIP*, then unzip; or
+   `git clone`).
+4. **Windows:** double-click **`run.bat`**. **macOS/Linux:** run `./run.sh`.
+
+The first run installs everything (about 5–10 minutes; the Python packages are large),
+asks for your API key once, and opens http://127.0.0.1:8000 in your browser. Later runs
+start in seconds. Close the window to stop the app. Optional: install
+[Tesseract](https://github.com/UB-Mannheim/tesseract/wiki) to read scanned PDFs.
+
+Your API key stays in `backend/.env` on your computer; it is never committed.
+
+**Windows note:** keep the folder at a short path such as `C:\Projects\agentic-research-assistant`.
+PyTorch installs very deep file paths, and Windows refuses paths over 260 characters unless
+[long paths are enabled](https://pip.pypa.io/warnings/enable-long-paths); `run.bat` checks
+this and tells you if the folder needs moving.
+
 ## How it works
 
 ```text

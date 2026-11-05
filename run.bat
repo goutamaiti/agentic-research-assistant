@@ -30,6 +30,23 @@ if not defined PY (
   exit /b 1
 )
 
+rem ---- Windows path-length check -------------------------------------
+rem Some PyTorch files sit ~150 characters deep inside the project, and Windows limits
+rem paths to 260 characters unless long paths are enabled.
+set "LONGPATHS="
+for /f "skip=2 tokens=3" %%v in ('reg query "HKLM\SYSTEM\CurrentControlSet\Control\FileSystem" /v LongPathsEnabled 2^>nul') do set "LONGPATHS=%%v"
+if not "%LONGPATHS%"=="0x1" if not exist "backend\.venv\installed-requirements.txt" (
+  for /f %%n in ('powershell -NoProfile -Command "('%~dp0').Length"') do set "PATHLEN=%%n"
+  if !PATHLEN! GTR 100 (
+    echo [X] This folder's path is too long for Windows ^(!PATHLEN! characters, limit about 100^):
+    echo     %~dp0
+    echo     Move the folder somewhere shorter, for example C:\Projects\, and run this file again.
+    echo     ^(Or enable Windows long paths: https://pip.pypa.io/warnings/enable-long-paths^)
+    pause
+    exit /b 1
+  )
+)
+
 rem ---- 2. Python environment and packages ----------------------------
 if not exist "backend\.venv\Scripts\python.exe" (
   echo [1/4] Creating the Python environment...
