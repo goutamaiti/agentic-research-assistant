@@ -1,107 +1,117 @@
 # Agentic RAG Framework for Automated Domain-Specific Knowledge Extraction
 
-A single-paper research assistant. Each workspace processes **one** academic PDF, extracts
-structured research knowledge with page/section evidence, records a verification status for
-each claim against the source passages, and answers questions about that paper only.
+A single-paper research assistant. Upload **one** academic PDF; the system extracts
+structured research knowledge (12 categories + methodology breakdown, contributions,
+terminology), links every claim to quoted passages with page numbers, checks each claim
+against its sources, and answers questions about that paper with page citations.
 
-- Requirements and scope: [PROJECT_CONTEXT.md](PROJECT_CONTEXT.md) (master specification)
-- Progress, decisions, and test results: [DEVELOPMENT_LOG.md](DEVELOPMENT_LOG.md)
+- Specification: [PROJECT_CONTEXT.md](PROJECT_CONTEXT.md) (with Amendments A1 reduced scope,
+  A2 OpenRouter route)
+- Work log, decisions, test results and limitations: [DEVELOPMENT_LOG.md](DEVELOPMENT_LOG.md)
 
-**Status:** Phases 1-2 implemented: upload, PDF processing (text, OCR fallback, pages,
-sections, deterministic metadata) and indexing (ChromaDB + BM25). LLM extraction,
-verification and the research assistant come in later phases.
+## How it works
 
-## Prerequisites
+```text
+PDF ─► validate ─► page text (+OCR) ─► sections & metadata ─► chunks ─► ChromaDB + BM25
+                                                                         │
+     LangGraph workflow (backend/app/workflows/analysis_graph.py)        ▼
+     knowledge extraction (3 parallel Gemini calls, quotes required) ─► claims + evidence
+     ─► evidence verification (deterministic checks + LLM judgement) ─► stored analysis
+Q&A: question ─► hybrid retrieval (semantic + BM25, RRF) ─► cited answer or "insufficient evidence"
+```
+
+Evidence rules: a quote the model cites must be found in the stored text, or it gets no
+page reference and the claim is `unsupported`. Unresolved claims are never marked
+`verified`. System inferences and explanations are labelled separately from author
+statements.
+
+## Requirements
 
 | Tool | Version used | Notes |
 |------|--------------|-------|
-| Python | 3.12.x | `requires-python >=3.12` |
-| Node.js | 24.x (Vite 8 needs ^20.19 or >=22.12) | npm 11 |
-| Tesseract OCR | optional system install | needed only to read **scanned** pages; without it they are marked `ocr_unavailable` and the paper is `partially_indexed`. On Windows, e.g. the UB-Mannheim build; set `TESSERACT_CMD` if it is not on PATH |
+| Python | 3.12 | backend |
+| Node.js | 24 (Vite needs ≥ 20.19 or ≥ 22.12) | frontend |
+| Tesseract OCR | 5.4 (optional) | only for scanned pages; Windows: `winget install --id UB-Mannheim.TesseractOCR` |
+| LLM API key | Google Gemini *or* OpenRouter | without a key, papers are indexed but not analysed |
 
-## Setup
-
-### Backend
+## Install
 
 ```bash
 cd backend
 python -m venv .venv
-.venv/Scripts/python -m pip install -r requirements-dev.txt   # Windows
-# .venv/bin/python -m pip install -r requirements-dev.txt     # macOS/Linux
-cp .env.example .env    # then set GEMINI_API_KEY (needed only from Phase 3)
+.venv/Scripts/python -m pip install -r requirements-dev.txt    # macOS/Linux: .venv/bin/python
+cp .env.example .env
 ```
 
-`requirements.txt` pins the direct dependencies. `requirements.lock.txt` is the full
-`pip freeze` from the verified environment and can be used for an exact reproduction
-(`pip install -r requirements.lock.txt`).
-
-### Frontend
+Edit `backend/.env`: set `GEMINI_API_KEY` (a Google AI Studio key, or an OpenRouter
+`sk-or-…` key, which is detected automatically). If Tesseract is not on PATH, set
+`TESSERACT_CMD`. The first analysis downloads the embedding model (~420 MB).
 
 ```bash
 cd frontend
 npm install
 ```
 
-## Running
-
-From `backend/` with the virtual environment active:
+## Run
 
 ```bash
-uvicorn app.main:create_app --factory --reload --port 8000
+cd backend && .venv/Scripts/python -m uvicorn app.main:create_app --factory --port 8000
 ```
-
-From `frontend/`:
 
 ```bash
-npm run dev
+cd frontend && npm run dev
 ```
 
-Open http://localhost:5173. The page calls `/api/health` through the Vite dev proxy and
-shows the status of the database, the vector store, and the LLM configuration.
+Open http://localhost:5173 (if the backend uses another port, start Vite with
+`BACKEND_URL=http://127.0.0.1:<port>`).
 
-If the backend runs on a different port, start Vite with `BACKEND_URL` set, for example
-`BACKEND_URL=http://127.0.0.1:8010 npm run dev` (PowerShell:
-`$env:BACKEND_URL="http://127.0.0.1:8010"; npm run dev`).
+## Demo
 
-## Processing a paper (API)
+1. **Upload** a public paper (e.g. arXiv 1706.03762) on the home page; watch the stages
+   (validation → extraction → sections → indexing → knowledge extraction → verification).
+2. **Analysis**: metadata and all categories, each claim with origin, verification status
+   and page; download the **PDF** or **JSON** report.
+3. **Evidence**: filter claims by status; each shows its quoted passages and pages.
+4. **Assistant**: ask e.g. "What optimizer was used?"; the answer cites pages; questions the
+   paper does not answer get an explicit insufficient-evidence reply.
+
+For UI work without an LLM, `backend/scripts/dev_fake_server.py` serves the app with
+scripted **test** output (development only; never for results).
+
+## API (all under `/api`)
+
+`GET /health` · `POST /documents/upload` · `GET /documents` · `GET /documents/{id}` ·
+`POST /documents/{id}/analyze` · `GET /documents/{id}/status` · `GET /documents/{id}/analysis` ·
+`GET /documents/{id}/evidence` · `POST /documents/{id}/chat` · `GET /documents/{id}/chat/history` ·
+`POST /documents/{id}/report` · `GET /reports/{report_id}`. Interactive docs: `/docs`.
+
+## Tests and evaluation
 
 ```bash
-curl -F "file=@paper.pdf;type=application/pdf" http://127.0.0.1:8000/api/documents/upload
-curl -X POST http://127.0.0.1:8000/api/documents/<id>/analyze      # returns 202 at once
-curl http://127.0.0.1:8000/api/documents/<id>/status               # poll: stages + metrics
-curl http://127.0.0.1:8000/api/documents/<id>                      # pages, sections, metadata
+cd backend && .venv/Scripts/python -m pytest
 ```
-
-The first analysis downloads the embedding model (~420 MB) from Hugging Face into the
-standard cache. Interactive API docs: http://127.0.0.1:8000/docs.
-
-## Tests and linting
 
 ```bash
-cd backend && .venv/Scripts/python -m pytest && .venv/Scripts/ruff check . && .venv/Scripts/ruff format --check .
-cd frontend && npm test && npm run build
+cd frontend && npm test
 ```
 
-Routine tests use synthetic PDFs and fake embedding/OCR services: no network, no model
-download, no Gemini calls. The real embedding model is exercised by opt-in integration
-tests: `RUN_INTEGRATION=1 .venv/Scripts/python -m pytest -m integration`.
+Routine tests use synthetic PDFs and fakes (no network, no paid calls). Evaluation
+scripts (run from `backend/`):
 
-## Configuration
-
-All backend settings come from environment variables or `backend/.env`. See
-[backend/.env.example](backend/.env.example). Relative storage paths resolve against the
-project root. Runtime data lives in `storage/`, which git ignores.
-
-The Gemini API key is read **only by the backend**. The frontend has no environment
-variables, and the browser talks only to same-origin `/api` routes.
-
-## Layout
-
-```text
-backend/    FastAPI app (app/), Alembic migrations (alembic/), tests (tests/)
-frontend/   React + Vite + Tailwind CSS v4
-storage/    uploads/, chroma/, reports/, database/   (runtime data, not committed)
-evaluation/ test_papers/ (public papers for manual checks, not committed)
+```bash
+.venv/Scripts/python ../evaluation/retrieval_tests.py ../evaluation/ground_truth/arxiv_1706.03762.json
 ```
 
-Modules from the specification's folder structure are added in the phase that needs them.
+```bash
+.venv/Scripts/python ../evaluation/verification_tests.py ../evaluation/ground_truth/verification_claims_1706.03762.json
+```
+
+The label files in `evaluation/ground_truth/` are **drafts** and must be reviewed by a
+person before any numbers are reported (see DEVELOPMENT_LOG.md for current results and
+sample sizes).
+
+## Limitations
+
+Section detection and passage selection are heuristic; tables and figures are text only;
+OCR quality on real scans is unmeasured; verification is automatic and can be wrong; the
+system is an assistant for reading one paper, not an authority on scientific truth.
