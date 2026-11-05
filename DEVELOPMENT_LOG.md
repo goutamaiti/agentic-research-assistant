@@ -453,7 +453,7 @@ arXiv paper (2.2 MB).
   measurement on one machine, not a benchmark.
 - **There is no delete endpoint yet** (Phase 7). Test data uploaded during the live check
   remains in `storage/`.
-- **Nothing is committed for Phase 2 yet.**
+- Phase 2 is committed as `65a1317`.
 
 ### Next recommended task
 
