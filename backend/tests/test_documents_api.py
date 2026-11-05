@@ -191,7 +191,11 @@ def test_analyze_indexes_paper(client: TestClient, tmp_path: Path) -> None:
     assert status["workflow_run_id"] == body["workflow_run_id"]
     assert [s["stage"] for s in status["stages"]] == list(STAGES)
     by_stage = {s["stage"]: s for s in status["stages"]}
-    processing_stages = [by_stage[name] for name in STAGES if name != "knowledge_extraction"]
+    processing_stages = [
+        by_stage[name]
+        for name in STAGES
+        if name not in ("knowledge_extraction", "evidence_verification")
+    ]
     assert all(s["status"] == "completed" for s in processing_stages)
     assert all(s["started_at"] and s["completed_at"] for s in processing_stages)
     # No LLM is configured in this client, so extraction is skipped with a reason.
@@ -416,7 +420,8 @@ def test_recover_marks_unfinished_work_interrupted(client: TestClient, tmp_path:
         ).all()
         # A finished run is left untouched (its skipped extraction stage included).
         assert all(r.status in (RunStatus.COMPLETED, RunStatus.SKIPPED) for r in completed)
-        assert sum(r.status == RunStatus.SKIPPED for r in completed) == 1
+        # Extraction and verification are skipped without an LLM.
+        assert sum(r.status == RunStatus.SKIPPED for r in completed) == 2
     stages = _stages(client, processing)
     assert stages[STAGES[0]]["status"] == "interrupted"
 

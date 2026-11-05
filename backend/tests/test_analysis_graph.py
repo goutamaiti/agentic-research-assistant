@@ -50,6 +50,7 @@ def test_successful_run_visits_every_stage_in_order(tmp_path: Path) -> None:
         "section_identification",
         "retrieval_indexing",
         "knowledge_extraction",
+        "evidence_verification",
     ]
     # Only IDs and status travel in the state, never document content.
     assert set(final) <= {

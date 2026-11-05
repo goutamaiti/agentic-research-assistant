@@ -21,6 +21,7 @@ from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.agents.extraction_agent import ExtractionAgent
+from app.agents.verification_agent import VerificationAgent
 from app.api import analysis, documents, health
 from app.config import APP_NAME, APP_VERSION, Settings, get_settings
 from app.database.connection import create_db_engine, create_session_factory
@@ -151,6 +152,7 @@ def create_app(
                 app.state.ocr_engine,
                 runner,
                 extraction_agent=extraction_agent,
+                verification_agent=VerificationAgent(llm),
             )
             app.state.analysis_service.recover()
             logger.info(

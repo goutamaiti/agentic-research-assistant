@@ -730,3 +730,31 @@ provider said "retry in ~19 h". A run took over 10 minutes.
 **Blocked:** the OpenRouter account has **$0 credit** (`total_credits: 0`; the $50 shown
 is only the key's spending cap), so a full real analysis on the merged 3-call design has
 not run yet. Re-run after credit is added.
+
+---
+
+## Step 5: Claim verification (2026-11-05, Amendment A1)
+
+**Done:** `backend/app/agents/verification_agent.py`, run as the non-fatal graph stage
+`evidence_verification` after extraction. Per claim:
+- no evidence → `not_verifiable`; cited quote not found in the paper → `unsupported`;
+  deterministic metadata whose value is in its exact quote → `verified` (no LLM call);
+- other claims: one LLM judgement per batch of 20 (batches in parallel) → `verified` /
+  `partially_supported` / `unsupported` / `contradicted`, with an explanation;
+- a number in the claim that is not in its quotes caps the result at
+  `partially_supported`;
+- without an LLM, or if a batch fails, claims stay `pending` with the reason; nothing is
+  verified by default.
+
+The verified analysis replaces the stored `result_json`; `verification_summary` counts the
+statuses. New endpoint `GET /api/documents/{id}/evidence` lists each claim with its
+passages (spec §12.4).
+
+**Tests:** 335 passed, 2 skipped (`tests/test_verification.py`: deterministic rules,
+number downgrade, contradicted, pending without or with a failing LLM, the endpoint).
+On the fake run: 23 verified, 2 partially supported (number gaps), 1 unsupported (the
+planted fabricated quote), 1 not verifiable.
+
+**Not done (A1):** targeted re-extraction for unsupported claims; recovery after an
+interrupted verification reports the document as `indexed` although its analysis exists.
+The real API is still untested for this step (Gemini returned 503).

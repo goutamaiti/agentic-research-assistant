@@ -13,6 +13,7 @@ from app.database.models import (
     PageExtractionStatus,
     RunStatus,
 )
+from app.schemas.evidence import Claim, EvidenceRecord
 from app.schemas.extraction import ExtractionResult
 from app.schemas.paper import DocumentMetadata
 
@@ -127,6 +128,16 @@ class AnalysisResponse(BaseModel):
     status: ExtractionRunStatus
     created_at: datetime
     result: ExtractionResult
+
+
+class ClaimWithEvidence(Claim):
+    evidence: list[EvidenceRecord]
+
+
+class EvidenceResponse(BaseModel):
+    document_id: str
+    verification_summary: dict[str, int]
+    claims: list[ClaimWithEvidence]
 
 
 class StatusResponse(BaseModel):

@@ -112,11 +112,19 @@ class FakeLLMTransport:
     def __init__(self, responder) -> None:
         self.responder = responder
         self.calls: list[dict] = []
+        self.verification_calls: list[dict] = []
 
     def generate(self, *, system_instruction, prompt, json_schema, temperature, max_output_tokens):
         import json
 
         from app.services.llm_service import LLMResponse, LLMUsage
+
+        if "verdicts" in json_schema["properties"]:
+            # Verification batches are recorded separately from extraction calls.
+            self.verification_calls.append({"prompt": prompt, "system": system_instruction})
+            answer = self.responder("verification", prompt, json_schema)
+            text = answer if isinstance(answer, str) else json.dumps(answer)
+            return LLMResponse(text=text, usage=LLMUsage(), model_version="fake-model-001")
 
         task, subtasks = next(
             spec for key, spec in self.TASKS.items() if key in json_schema["properties"]
@@ -150,6 +158,15 @@ def grounded_responder(task: str, prompt: str, schema: dict) -> dict:
     """A plausible answer quoting real passages, with deliberate traps:
     a fabricated quote, an unsupported inference, an injected app-owned field and a wrong
     passage ID."""
+    if task == "verification":
+        # Every claim is judged verified; the agent's deterministic rules still apply.
+        claim_ids = re.findall(r"^CLAIM (CLM_\d+):", prompt, re.MULTILINE)
+        return {
+            "verdicts": [
+                {"claim_id": cid, "status": "verified", "explanation": "The quote states it."}
+                for cid in claim_ids
+            ]
+        }
     passages = prompt_passages(prompt)
     pid, _, text = passages[0]
     quote = first_sentence(text)

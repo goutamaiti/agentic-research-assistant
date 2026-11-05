@@ -419,9 +419,14 @@ def test_processing_metadata_records_versions_tasks_and_pending_verification(
         assert task["input_tokens"] and task["input_tokens"] > 0
         assert task["output_tokens"] and task["output_tokens"] > 0
         assert task["error"] is None
-    assert meta["verification_summary"] == {"pending": len(result["claims"])}
-    assert all(c["verification_status"] == "pending" for c in result["claims"])
-    assert all(e["verification_status"] == "pending" for e in result["evidence_registry"])
+    # Verification (Step 5) has run: every claim has a final status, and the planted
+    # fabricated quote is unsupported, never verified.
+    summary = meta["verification_summary"]
+    assert sum(summary.values()) == len(result["claims"])
+    assert "pending" not in summary
+    assert summary.get("unsupported", 0) >= 1
+    assert all(c["verification_explanation"] for c in result["claims"])
+    assert all(e["verification_status"] != "pending" for e in result["evidence_registry"])
 
 
 # ----- Failure isolation ----------------------------------------------------------------

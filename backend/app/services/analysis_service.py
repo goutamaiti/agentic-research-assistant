@@ -22,6 +22,7 @@ from sqlalchemy import delete, select, update
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.agents.extraction_agent import ExtractionAgent
+from app.agents.verification_agent import VerificationAgent
 from app.config import INDEX_VERSION, Settings
 from app.database.models import (
     Document,
@@ -56,6 +57,7 @@ from app.retrieval.vector_store import (
     delete_document_vectors,
     index_document,
 )
+from app.schemas.extraction import ExtractionResult
 from app.services.document_service import get_document, resolve_document_file
 from app.services.jobs import JobRunner
 
@@ -67,7 +69,10 @@ STAGES = (
     "section_identification",
     "retrieval_indexing",
     "knowledge_extraction",
+    "evidence_verification",
 )
+# Stages whose failure or interruption leaves the document indexed and searchable.
+NON_FATAL_STAGES = ("knowledge_extraction", "evidence_verification")
 ACTIVE_STATUSES = (DocumentStatus.QUEUED, DocumentStatus.PROCESSING)
 # Sections that are kept and chunked but not embedded unless configured otherwise.
 NON_INDEXED_SECTION_TYPES = frozenset({"references", "acknowledgments"})
@@ -99,6 +104,7 @@ class _RunContext:
     partial_reasons: list[str] = field(default_factory=list)
     extraction: str | None = None  # completed | partial | failed | skipped
     extraction_detail: str | None = None
+    extraction_id: int | None = None  # the Extraction row written by this run
 
 
 class AnalysisService:
@@ -111,6 +117,7 @@ class AnalysisService:
         ocr_engine: OcrEngine | None,
         job_runner: JobRunner,
         extraction_agent: ExtractionAgent | None = None,
+        verification_agent: VerificationAgent | None = None,
     ) -> None:
         self.settings = settings
         self.session_factory = session_factory
@@ -119,6 +126,7 @@ class AnalysisService:
         self.ocr_engine = ocr_engine
         self.job_runner = job_runner
         self.extraction_agent = extraction_agent
+        self.verification_agent = verification_agent
 
     # ----- Public API -------------------------------------------------------------------
 
@@ -188,7 +196,7 @@ class AnalysisService:
             session.commit()
 
         for document_id, (run_id, stage) in first_stale.items():
-            if stage == "knowledge_extraction":
+            if stage in NON_FATAL_STAGES:
                 self._set_document(document_id, *self._status_after_interrupted_extraction(run_id))
             else:
                 self._discard_stale_results(document_id, failed_stage=stage)
@@ -304,6 +312,59 @@ class AnalysisService:
 
     def execute_extraction_stage(self, context: _RunContext) -> None:
         self._run_extraction_stage(context)
+
+    def execute_verification_stage(self, context: _RunContext) -> None:
+        """Verify this run's claims and store the verified analysis. Non-fatal."""
+        from app.agents.verification_agent import PROMPT_VERSION as VERIFY_PROMPT
+
+        stage = "evidence_verification"
+        self._update_stage(context, stage, status=RunStatus.RUNNING, started=True)
+        started = time.perf_counter()
+        if context.extraction_id is None or self.verification_agent is None:
+            self._update_stage(
+                context,
+                stage,
+                status=RunStatus.SKIPPED,
+                completed=True,
+                metrics={"reason": "no_analysis_to_verify"},
+            )
+            return
+        try:
+            with self.session_factory() as session:
+                row = session.get(Extraction, context.extraction_id)
+                result = ExtractionResult.model_validate(row.result_json)
+                verified = self.verification_agent.verify(result)
+                row.result_json = verified.model_dump(mode="json")
+                session.commit()
+        except Exception as exc:
+            error = self._describe_error(exc)
+            logger.error(
+                "Run %s verification failed: %s",
+                context.workflow_run_id,
+                error["code"],
+                exc_info=True,
+            )
+            self._update_stage(
+                context,
+                stage,
+                status=RunStatus.FAILED,
+                completed=True,
+                error=error,
+                metrics={"duration_ms": _elapsed_ms(started)},
+            )
+            return
+        self._update_stage(
+            context,
+            stage,
+            status=RunStatus.COMPLETED,
+            completed=True,
+            metrics={
+                "verification_summary": verified.processing_metadata.verification_summary,
+                "llm_used": self.verification_agent.llm is not None,
+                "prompt_version": VERIFY_PROMPT,
+                "duration_ms": _elapsed_ms(started),
+            },
+        )
 
     def finalize_run(self, context: _RunContext) -> None:
         self._set_document(context.document_id, *self._final_status(context))
@@ -635,20 +696,20 @@ class AnalysisService:
         meta = result.processing_metadata
         status = ExtractionRunStatus(meta.processing_status)
         with self.session_factory() as session:
-            session.add(
-                Extraction(
-                    document_id=context.document_id,
-                    workflow_run_id=context.workflow_run_id,
-                    schema_version=result.schema_version,
-                    model_id=meta.model_id,
-                    prompt_version=meta.prompt_version,
-                    embedding_model_id=meta.embedding_model_id,
-                    index_version=meta.index_version,
-                    result_json=result.model_dump(mode="json"),
-                    status=status,
-                )
+            row = Extraction(
+                document_id=context.document_id,
+                workflow_run_id=context.workflow_run_id,
+                schema_version=result.schema_version,
+                model_id=meta.model_id,
+                prompt_version=meta.prompt_version,
+                embedding_model_id=meta.embedding_model_id,
+                index_version=meta.index_version,
+                result_json=result.model_dump(mode="json"),
+                status=status,
             )
+            session.add(row)
             session.commit()
+            context.extraction_id = row.id
 
         context.extraction = status.value
         failed_tasks = [t.task for t in meta.tasks if t.task_status == "failed"]

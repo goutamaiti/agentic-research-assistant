@@ -1,11 +1,12 @@
 """The analysis workflow as a LangGraph state graph (spec §8.1, Amendment A1 step 4).
 
     START → upload_validation → document_extraction → section_identification
-          → retrieval_indexing → knowledge_extraction → finalize → END
+          → retrieval_indexing → knowledge_extraction → evidence_verification
+          → finalize → END
 
 Each processing stage routes to END as soon as it fails (the stage itself records the
-failure and skips the rest). Knowledge extraction is non-fatal and always reaches
-``finalize``. The graph has no loops: retries stay bounded inside the LLM service.
+failure and skips the rest). Knowledge extraction and verification are non-fatal and always
+reach ``finalize``. The graph has no loops: retries stay bounded inside the LLM service.
 """
 
 from __future__ import annotations
@@ -60,6 +61,13 @@ def build_analysis_graph(service: AnalysisService, context: _RunContext) -> Comp
             "completed_stages": [*state.get("completed_stages", []), "knowledge_extraction"],
         }
 
+    def verification_node(state: AnalysisState) -> AnalysisState:
+        service.execute_verification_stage(context)
+        return {
+            "current_task": "evidence_verification",
+            "completed_stages": [*state.get("completed_stages", []), "evidence_verification"],
+        }
+
     def finalize_node(state: AnalysisState) -> AnalysisState:
         service.finalize_run(context)
         return {"current_task": "finalize", "processing_status": "completed"}
@@ -67,12 +75,14 @@ def build_analysis_graph(service: AnalysisService, context: _RunContext) -> Comp
     for stage in PROCESSING_STAGES:
         graph.add_node(stage, processing_node(stage))
     graph.add_node("knowledge_extraction", extraction_node)
+    graph.add_node("evidence_verification", verification_node)
     graph.add_node("finalize", finalize_node)
 
     graph.add_edge(START, PROCESSING_STAGES[0])
     following = [*PROCESSING_STAGES[1:], "knowledge_extraction"]
     for stage, next_node in zip(PROCESSING_STAGES, following, strict=True):
         graph.add_conditional_edges(stage, _route_after(next_node), [next_node, END])
-    graph.add_edge("knowledge_extraction", "finalize")
+    graph.add_edge("knowledge_extraction", "evidence_verification")
+    graph.add_edge("evidence_verification", "finalize")
     graph.add_edge("finalize", END)
     return graph.compile()

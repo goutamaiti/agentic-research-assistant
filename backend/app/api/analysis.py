@@ -9,7 +9,14 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_session
 from app.database.models import Extraction
 from app.errors import AppError
-from app.schemas.api import AnalysisResponse, AnalyzeResponse, StageStatus, StatusResponse
+from app.schemas.api import (
+    AnalysisResponse,
+    AnalyzeResponse,
+    ClaimWithEvidence,
+    EvidenceResponse,
+    StageStatus,
+    StatusResponse,
+)
 from app.schemas.extraction import ExtractionResult
 from app.services import document_service
 from app.services.analysis_service import latest_run
@@ -38,6 +45,24 @@ def analysis_status(document_id: str, session: Session = Depends(get_session)) -
         status_detail=document.status_detail,
         workflow_run_id=run_id,
         stages=[StageStatus.model_validate(stage) for stage in stages],
+    )
+
+
+@router.get("/{document_id}/evidence", response_model=EvidenceResponse)
+def get_evidence(document_id: str, session: Session = Depends(get_session)) -> EvidenceResponse:
+    """Every claim with its verification status and its supporting passages (spec §12.4)."""
+    analysis = get_analysis(document_id, session)
+    records = {e.evidence_id: e for e in analysis.result.evidence_registry}
+    claims = [
+        ClaimWithEvidence(
+            **claim.model_dump(), evidence=[records[i] for i in claim.evidence_ids if i in records]
+        )
+        for claim in analysis.result.claims
+    ]
+    return EvidenceResponse(
+        document_id=document_id,
+        verification_summary=analysis.result.processing_metadata.verification_summary,
+        claims=claims,
     )
 
 
