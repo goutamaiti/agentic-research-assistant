@@ -161,7 +161,7 @@ def test_analysis_with_llm_returns_validated_result(settings: Settings, tmp_path
     assert meta.model_id == "fake-model"
     assert meta.prompt_version == PROMPT_VERSION
     assert result.schema_version == SCHEMA_VERSION
-    assert {t.task for t in meta.tasks} == set(FakeLLMTransport.TASKS.values())
+    assert {t.task for t in meta.tasks} == {spec[0] for spec in FakeLLMTransport.TASKS.values()}
     assert all(t.task_status != "failed" for t in meta.tasks)
     # The stored row is the same validated result the endpoint returned.
     assert ExtractionResult.model_validate(row.result_json) == result

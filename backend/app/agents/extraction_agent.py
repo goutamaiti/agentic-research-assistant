@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 import re
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -40,18 +41,16 @@ from app.retrieval.vector_store import VectorStoreError, semantic_search
 from app.schemas.evidence import Claim, ClaimCategory, EvidenceRecord, Origin, QuoteMatch
 from app.schemas.extraction import (
     CategoryBase,
-    ExperimentsResponse,
+    ExperimentsTaskResponse,
     ExtractionResult,
     Grounded,
     MetadataResponse,
     MetadataValue,
-    MethodsResponse,
-    OutlookResponse,
-    OverviewResponse,
+    MethodsTaskResponse,
+    OverviewTaskResponse,
     PaperMetadata,
     ProcessingMetadata,
     TaskRecord,
-    TerminologyResponse,
     TextField,
 )
 from app.schemas.paper import DocumentMetadata, ExtractionStatus
@@ -71,12 +70,19 @@ class ExtractionTask:
     queries: tuple[str, ...]
     # Where each response field goes in the final result: field -> (part, category path).
     targets: dict[str, tuple[str, str]] = field(default_factory=dict)
+    includes_metadata: bool = False  # front-matter passages + publication metadata
+    includes_terminology: bool = False  # passages that define abbreviations
 
 
+def _merged(name: str, *prompts: TaskPrompt) -> TaskPrompt:
+    return TaskPrompt(name, "\n".join(p.instructions for p in prompts))
+
+
+# Three calls per paper (run in parallel), each covering related categories.
 TASKS: tuple[ExtractionTask, ...] = (
     ExtractionTask(
-        TASK_PROMPTS["overview"],
-        OverviewResponse,
+        _merged("overview", TASK_PROMPTS["overview"], METADATA),
+        OverviewTaskResponse,
         ("abstract", "introduction", "related_work"),
         (
             "research problem addressed by this paper",
@@ -88,59 +94,46 @@ TASKS: tuple[ExtractionTask, ...] = (
             name: ("research_analysis", name)
             for name in ("abstract", "research_problem", "objectives", "motivation", "background")
         },
+        includes_metadata=True,
     ),
     ExtractionTask(
-        TASK_PROMPTS["methods"],
-        MethodsResponse,
+        _merged("methods", TASK_PROMPTS["methods"], TASK_PROMPTS["terminology"]),
+        MethodsTaskResponse,
         ("methodology",),
         (
             "proposed method and architecture",
             "algorithm procedure and steps",
             "model configuration and hyperparameters",
+            "definition of a technical term",
         ),
         {
             "methodology": ("research_analysis", "methodology"),
             "algorithms_and_models": ("technical_analysis", "algorithms_and_models"),
             "methodology_breakdown": ("technical_analysis", "methodology_breakdown"),
+            "technical_terminology": ("technical_analysis", "technical_terminology"),
         },
+        includes_terminology=True,
     ),
     ExtractionTask(
-        TASK_PROMPTS["experiments"],
-        ExperimentsResponse,
-        ("experiments", "results"),
+        _merged("experiments", TASK_PROMPTS["experiments"], TASK_PROMPTS["outlook"]),
+        ExperimentsTaskResponse,
+        ("experiments", "results", "conclusion", "discussion", "limitations", "future_work"),
         (
             "datasets used for training and evaluation",
             "experimental setup hardware and training",
             "evaluation metrics and results compared with baselines",
-        ),
-        {
-            "dataset_and_experiments": ("technical_analysis", "dataset_and_experiments"),
-            "results": ("research_analysis", "results"),
-        },
-    ),
-    ExtractionTask(
-        TASK_PROMPTS["outlook"],
-        OutlookResponse,
-        ("conclusion", "discussion", "limitations", "future_work"),
-        (
             "limitations of this work",
             "future work and directions",
             "the main contributions of this paper",
         ),
         {
+            "dataset_and_experiments": ("technical_analysis", "dataset_and_experiments"),
+            "results": ("research_analysis", "results"),
             "limitations": ("research_analysis", "limitations"),
             "future_scope": ("research_analysis", "future_scope"),
             "research_contributions": ("technical_analysis", "research_contributions"),
         },
     ),
-    ExtractionTask(
-        TASK_PROMPTS["terminology"],
-        TerminologyResponse,
-        ("abstract", "introduction", "methodology"),
-        ("definition of a technical term", "abbreviation stands for"),
-        {"technical_terminology": ("technical_analysis", "technical_terminology")},
-    ),
-    ExtractionTask(METADATA, MetadataResponse, ("front_matter", "abstract"), ()),
 )
 
 # Claim category for a response field (and sub-field, when it differs).
@@ -228,24 +221,22 @@ class PassageSelector:
 
     def select(self, task: ExtractionTask) -> list[_Chunk]:
         ordered: list[str] = []
-        if task.prompt is METADATA:
-            ordered = [
+        if task.includes_metadata:
+            # Front matter first: that is where authors, venue and year are printed.
+            ordered += [
                 c.chunk_id
                 for c in self._chunks
-                if c.section_type in task.section_types or c.pdf_page_start == 0
+                if c.section_type == "front_matter" or c.pdf_page_start == 0
             ]
-        else:
-            ordered = [
-                c.chunk_id
-                for c in self._chunks
-                if c.indexed and c.section_type in task.section_types
+        ordered += [
+            c.chunk_id for c in self._chunks if c.indexed and c.section_type in task.section_types
+        ]
+        if task.includes_terminology:
+            ordered += [
+                c.chunk_id for c in self._chunks if c.indexed and _ABBREVIATION.search(c.text)
             ]
-            if task.prompt.name == "terminology":
-                ordered += [
-                    c.chunk_id for c in self._chunks if c.indexed and _ABBREVIATION.search(c.text)
-                ]
-            for query in task.queries:
-                ordered += self._retrieved(query)
+        for query in task.queries:
+            ordered += self._retrieved(query)
 
         chosen: list[_Chunk] = []
         seen: set[str] = set()
@@ -539,8 +530,17 @@ class ExtractionAgent:
         )
         pending = self._apply_deterministic_metadata(result, deterministic, displayed, assembler)
 
-        for task in TASKS:
-            record = self._run_task(task, selector, page_texts, displayed, result, assembler)
+        # Passage selection is sequential (it uses the embedding model); the LLM calls run
+        # in parallel; assembly runs in task order so claim IDs stay deterministic.
+        prepared = [self._prepare(task, selector, page_texts, displayed) for task in TASKS]
+        with ThreadPoolExecutor(max_workers=len(TASKS), thread_name_prefix="llm") as pool:
+            futures = [
+                pool.submit(self._call, task, item[0]) if item is not None else None
+                for task, item in zip(TASKS, prepared, strict=True)
+            ]
+            outputs = [future.result() if future is not None else None for future in futures]
+        for task, item, output in zip(TASKS, prepared, outputs, strict=True):
+            record = self._assemble(task, item, output, result, assembler)
             result.processing_metadata.tasks.append(record)
 
         # Ambiguous or partial deterministic values get their claim only now, if the LLM
@@ -589,12 +589,11 @@ class ExtractionAgent:
         # Final structural validation of the complete output (spec FR-18).
         return ExtractionResult.model_validate(result.model_dump(mode="json"))
 
-    def _run_task(self, task, selector, page_texts, displayed, result, assembler) -> TaskRecord:
-        name = task.prompt.name
+    def _prepare(self, task, selector, page_texts, displayed):
+        """Select passages for a task; returns (passages, linker) or None if there are none."""
         chosen = selector.select(task)
         if not chosen:
-            self._mark(task, result, "not_run", "No relevant passages were found for this task.")
-            return TaskRecord(task=name, task_status="not_run", passages=0)
+            return None
         passages = [
             PromptPassage(f"P{i + 1:02d}", c.section_name, _page_label(c), c.text)
             for i, c in enumerate(chosen)
@@ -614,38 +613,49 @@ class ExtractionAgent:
             page_texts,
             displayed,
         )
+        return passages, linker
+
+    def _call(self, task: ExtractionTask, passages: list[PromptPassage]):
+        """The task's LLM call; returns the structured result or the LLMError raised."""
         try:
-            output = self.llm.generate_structured(
+            return self.llm.generate_structured(
                 task.response_model,
                 system_instruction=SYSTEM_INSTRUCTION,
                 prompt=build_prompt(task.prompt, passages),
             )
         except LLMError as exc:
-            logger.warning("Extraction task %s failed: %s", name, exc.code)
-            self._mark(task, result, "failed", f"Extraction failed: {exc.message}")
+            return exc
+
+    def _assemble(self, task, prepared, output, result, assembler) -> TaskRecord:
+        """Turn one task's output into claims and evidence (runs in task order)."""
+        name = task.prompt.name
+        if prepared is None:
+            self._mark(task, result, "not_run", "No relevant passages were found for this task.")
+            return TaskRecord(task=name, task_status="not_run", passages=0)
+        passages, linker = prepared
+        if isinstance(output, LLMError):
+            logger.warning("Extraction task %s failed: %s", name, output.code)
+            self._mark(task, result, "failed", f"Extraction failed: {output.message}")
             return TaskRecord(
                 task=name,
                 task_status="failed",
                 passages=len(passages),
-                error=f"{exc.code}: {exc.message}",
+                error=f"{output.code}: {output.message}",
             )
 
         response = output.value
+        for field_name, (part, attribute) in task.targets.items():
+            category: CategoryBase = getattr(response, field_name)
+            created = assembler.walk(category, f"{part}.{attribute}", _CATEGORY[field_name], linker)
+            container = getattr(result, part)
+            if attribute == "abstract":
+                # Keep the deterministic verbatim abstract; it counts as content.
+                category.original_abstract = container.abstract.original_abstract
+                created += len(category.original_abstract.claim_ids)
+            _normalise_category_status(category, created)
+            setattr(container, attribute, category)
         if isinstance(response, MetadataResponse):
             self._apply_llm_metadata(result.paper_metadata, response, assembler, linker)
-        else:
-            for field_name, (part, attribute) in task.targets.items():
-                category: CategoryBase = getattr(response, field_name)
-                created = assembler.walk(
-                    category, f"{part}.{attribute}", _CATEGORY[field_name], linker
-                )
-                container = getattr(result, part)
-                if attribute == "abstract":
-                    # Keep the deterministic verbatim abstract; it counts as content.
-                    category.original_abstract = container.abstract.original_abstract
-                    created += len(category.original_abstract.claim_ids)
-                _normalise_category_status(category, created)
-                setattr(container, attribute, category)
         return TaskRecord(
             task=name,
             task_status="completed",
@@ -663,7 +673,7 @@ class ExtractionAgent:
             category: CategoryBase = getattr(getattr(result, part), attribute)
             category.task_status = task_status  # type: ignore[assignment]
             category.note = note
-        if task.prompt is METADATA:
+        if task.includes_metadata:
             for name in ("authors", "journal_or_conference", "publication_year", "keywords"):
                 value: MetadataValue = getattr(result.paper_metadata, name)
                 if value.status != ExtractionStatus.EXTRACTED:

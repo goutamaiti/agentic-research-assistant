@@ -439,6 +439,21 @@ class MetadataResponse(_Model):
     keywords: KeywordsField
 
 
+# Merged task responses: three LLM calls per paper (Amendment A1 speed-up).
+
+
+class OverviewTaskResponse(OverviewResponse, MetadataResponse):
+    pass
+
+
+class MethodsTaskResponse(MethodsResponse, TerminologyResponse):
+    pass
+
+
+class ExperimentsTaskResponse(ExperimentsResponse, OutlookResponse):
+    pass
+
+
 # ----- Final result (spec §5.3) -------------------------------------------------------
 
 
@@ -530,9 +545,14 @@ def llm_json_schema(model: type[BaseModel]) -> dict[str, Any]:
                         if name not in APP_OWNED_FIELDS
                     }
                 elif key == "required":
-                    out[key] = [name for name in value if name not in APP_OWNED_FIELDS]
+                    continue  # recomputed below
                 else:
                     out[key] = resolve(value)
+            if "properties" in out:
+                # Every field is required (nullable fields may still be null). Gemini omits
+                # fields that are optional in the schema, which silently drops values and
+                # supporting quotes (observed with gemini-3.6-flash on 2026-11-05).
+                out["required"] = list(out["properties"])
             return out
         if isinstance(node, list):
             return [resolve(item) for item in node]

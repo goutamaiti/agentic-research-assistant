@@ -29,7 +29,7 @@ from app.prompts.extraction import (  # noqa: E402
     build_prompt,
 )
 from app.schemas.extraction import OverviewResponse  # noqa: E402
-from app.services.llm_service import GeminiTransport, LLMError, LLMService  # noqa: E402
+from app.services.llm_service import LLMError, LLMService, build_transport  # noqa: E402
 
 PASSAGE = PromptPassage(
     "P01",
@@ -48,16 +48,12 @@ class Ping(BaseModel):
 
 def main() -> int:
     settings = get_settings()
-    if settings.gemini_api_key is None:
-        print("GEMINI_API_KEY is not set in backend/.env; nothing to verify.")
+    transport = build_transport(settings)
+    if transport is None:
+        print("No LLM API key is set in backend/.env; nothing to verify.")
         return 2
-    transport = GeminiTransport(
-        api_key=settings.gemini_api_key.get_secret_value(),
-        model_id=settings.gemini_model,
-        timeout_seconds=settings.llm_timeout_seconds,
-    )
-    service = LLMService(transport, model_id=settings.gemini_model, max_retries=1)
-    print(f"Model: {settings.gemini_model}")
+    service = LLMService(transport, model_id=settings.llm_model_id, max_retries=1)
+    print(f"Model: {settings.llm_model_id} via {settings.resolved_llm_provider}")
     try:
         ping = service.generate_structured(
             Ping,

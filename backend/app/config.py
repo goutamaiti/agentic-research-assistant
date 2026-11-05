@@ -48,15 +48,22 @@ class Settings(BaseSettings):
 
     max_upload_mb: int = Field(default=30, gt=0)
 
+    # The model is Gemini either way; "openrouter" reaches it through OpenRouter
+    # (Amendment A2). "auto" picks OpenRouter for an OpenRouter key (sk-or-...).
+    llm_provider: Literal["auto", "gemini", "openrouter"] = "auto"
     gemini_api_key: SecretStr | None = None
+    openrouter_api_key: SecretStr | None = None
     gemini_model: str = "gemini-3.8-flash"
-    llm_timeout_seconds: float = Field(default=60.0, gt=0)
-    llm_max_retries: int = Field(default=3, ge=0)  # timeouts, rate limits, server errors
+    llm_timeout_seconds: float = Field(default=90.0, gt=0)
+    # Timeouts and server errors; a used-up quota is never retried.
+    llm_max_retries: int = Field(default=1, ge=0)
     llm_invalid_output_retries: int = Field(default=1, ge=0)  # unparseable/invalid JSON
     llm_temperature: float = Field(default=0.1, ge=0.0, le=2.0)
-    llm_max_output_tokens: int = Field(default=8192, gt=0)
+    llm_max_output_tokens: int = Field(default=16384, gt=0)  # thinking tokens count too
+    # Reasoning before answering; extraction with quotes needs little, and it is slow.
+    llm_thinking_level: Literal["minimal", "low", "medium", "high", "default"] = "low"
     # Upper bound on passage tokens sent per extraction task (keeps prompts focused).
-    extraction_passage_token_budget: int = Field(default=6000, gt=0)
+    extraction_passage_token_budget: int = Field(default=8000, gt=0)
 
     embedding_model: str = "sentence-transformers/multi-qa-mpnet-base-cos-v1"
     embedding_device: str = "cpu"
@@ -94,7 +101,7 @@ class Settings(BaseSettings):
     def _upper_log_level(cls, value: object) -> object:
         return value.upper() if isinstance(value, str) else value
 
-    @field_validator("gemini_api_key", mode="before")
+    @field_validator("gemini_api_key", "openrouter_api_key", mode="before")
     @classmethod
     def _blank_key_is_none(cls, value: object) -> object:
         if isinstance(value, str) and not value.strip():
@@ -159,7 +166,30 @@ class Settings(BaseSettings):
 
     @property
     def llm_configured(self) -> bool:
-        return self.gemini_api_key is not None
+        return self.llm_api_key is not None
+
+    @property
+    def resolved_llm_provider(self) -> Literal["gemini", "openrouter"]:
+        if self.llm_provider != "auto":
+            return self.llm_provider
+        if self.openrouter_api_key is not None:
+            return "openrouter"
+        key = self.gemini_api_key.get_secret_value() if self.gemini_api_key else ""
+        return "openrouter" if key.startswith("sk-or-") else "gemini"
+
+    @property
+    def llm_api_key(self) -> SecretStr | None:
+        """The key for the resolved provider (an OpenRouter key may sit in GEMINI_API_KEY)."""
+        if self.resolved_llm_provider == "openrouter":
+            return self.openrouter_api_key or self.gemini_api_key
+        return self.gemini_api_key
+
+    @property
+    def llm_model_id(self) -> str:
+        """Model ID as the provider expects it: OpenRouter uses ``google/<model>``."""
+        if self.resolved_llm_provider == "openrouter" and "/" not in self.gemini_model:
+            return f"google/{self.gemini_model}"
+        return self.gemini_model
 
     def ensure_storage_dirs(self) -> None:
         """Create the controlled storage directories if they do not exist."""

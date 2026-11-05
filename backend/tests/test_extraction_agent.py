@@ -28,11 +28,14 @@ from tests import pdf_factory
 from tests.conftest import make_client, make_settings
 from tests.fakes import FakeEmbedder, FakeLLMTransport, grounded_responder, prompt_passages
 
-TASK_NAMES = ["overview", "methods", "experiments", "outlook", "terminology", "metadata"]
+# Three physical calls; each covers two sub-tasks (see FakeLLMTransport).
+TASK_NAMES = ["overview", "methods", "experiments"]
 METHODS_CATEGORIES = [
     ("research_analysis", "methodology"),
     ("technical_analysis", "algorithms_and_models"),
     ("technical_analysis", "methodology_breakdown"),
+    # The methods call also extracts terminology.
+    ("technical_analysis", "technical_terminology"),
 ]
 ALL_CATEGORIES = [
     ("research_analysis", "abstract"),
@@ -171,7 +174,7 @@ def test_grounded_run_analyzes_document_with_one_call_per_task(grounded: Grounde
     assert document["status"] == "analyzed"
     assert body["status"] == "completed"
     assert sorted(c["task"] for c in transport.calls) == sorted(TASK_NAMES)
-    assert len(transport.calls) == 6
+    assert len(transport.calls) == 3
     assert all(c["system"] == SYSTEM_INSTRUCTION for c in transport.calls)
 
     result = body["result"]
@@ -484,7 +487,7 @@ def test_all_tasks_failing_keeps_document_indexed_and_searchable(tmp_path: Path)
         with client.app.state.session_factory() as session:
             hits = search_keyword(session, document_id, "BM25 term frequency", 5)
 
-    assert len(transport.calls) == 6
+    assert len(transport.calls) == 3
     assert document["status"] == "indexed"
     assert "Knowledge extraction failed" in document["status_detail"]
     assert "every extraction task failed" in document["status_detail"]
@@ -522,7 +525,7 @@ def test_invalid_json_is_retried_once_then_task_fails(tmp_path: Path) -> None:
     assert len(experiment_calls) == 2
     assert "rejected" not in experiment_calls[0]["prompt"]
     assert "Your previous answer was rejected" in experiment_calls[1]["prompt"]
-    assert len(transport.calls) == 7
+    assert len(transport.calls) == 4
 
     result = body["result"]
     tasks = {t["task"]: t for t in result["processing_metadata"]["tasks"]}
@@ -548,11 +551,11 @@ def test_transient_errors_are_retried_a_bounded_number_of_times(tmp_path: Path) 
         document_id = _upload_and_analyze(client, _paper(tmp_path))
         body = _analysis(client, document_id)
 
-    assert [c["task"] for c in transport.calls].count("terminology") == 3
+    assert [c["task"] for c in transport.calls].count("methods") == 3
     assert sleeps == [1.0, 1.0]
     tasks = {t["task"]: t for t in body["result"]["processing_metadata"]["tasks"]}
-    assert tasks["terminology"]["task_status"] == "failed"
-    assert tasks["terminology"]["error"].startswith("rate_limited:")
+    assert tasks["methods"]["task_status"] == "failed"
+    assert tasks["methods"]["error"].startswith("rate_limited:")
 
 
 # ----- Prompt safety and passage budget -------------------------------------------------
@@ -589,7 +592,7 @@ def test_untrusted_paper_text_only_appears_inside_passage_tags(tmp_path: Path) -
         document = _document(client, document_id)
 
     assert document["status"] == "analyzed"
-    assert len(transport.calls) == 6
+    assert len(transport.calls) == 3
     carrying = 0
     for call in transport.calls:
         prompt = call["prompt"]

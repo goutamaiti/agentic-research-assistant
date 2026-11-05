@@ -11,7 +11,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-PROMPT_VERSION = "extraction-v1"
+PROMPT_VERSION = "extraction-v3"  # v3: 3 merged tasks; all schema fields required
 
 SYSTEM_INSTRUCTION = """\
 You extract structured research knowledge from ONE academic paper, using only the passages

@@ -33,7 +33,7 @@ from app.retrieval.vector_store import create_chroma_client
 from app.schemas.api import ErrorDetail, ErrorResponse
 from app.services.analysis_service import AnalysisService
 from app.services.jobs import JobRunner, ThreadJobRunner
-from app.services.llm_service import GeminiTransport, LLMService
+from app.services.llm_service import LLMService, build_transport
 
 logger = logging.getLogger(__name__)
 
@@ -76,16 +76,12 @@ def _register_error_handlers(app: FastAPI) -> None:
 
 
 def _default_llm_service(settings: Settings) -> LLMService | None:
-    if settings.gemini_api_key is None:
+    transport = build_transport(settings)
+    if transport is None:
         return None
-    transport = GeminiTransport(
-        api_key=settings.gemini_api_key.get_secret_value(),
-        model_id=settings.gemini_model,
-        timeout_seconds=settings.llm_timeout_seconds,
-    )
     return LLMService(
         transport,
-        model_id=settings.gemini_model,
+        model_id=settings.llm_model_id,
         max_retries=settings.llm_max_retries,
         invalid_output_retries=settings.llm_invalid_output_retries,
         temperature=settings.llm_temperature,
@@ -163,7 +159,7 @@ def create_app(
                 APP_VERSION,
                 settings.app_env,
                 settings.llm_configured,
-                settings.gemini_model,
+                f"{settings.llm_model_id} via {settings.resolved_llm_provider}",
             )
             yield
         finally:

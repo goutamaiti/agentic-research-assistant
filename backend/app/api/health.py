@@ -43,7 +43,7 @@ def health(request: Request) -> HealthResponse:
     settings = state.settings
     components["llm"] = ComponentHealth(
         status="configured" if settings.llm_configured else "not_configured",
-        detail=f"model={settings.gemini_model}",
+        detail=f"model={settings.llm_model_id}",
     )
     # Neither check loads a model or runs OCR; they only report what is installed/selected.
     components["embeddings"] = ComponentHealth(

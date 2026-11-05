@@ -699,3 +699,34 @@ document content is in the state.
 **Gemini:** re-tried; still HTTP 503 "high demand" on `gemini-3.8-flash`.
 
 **Next:** Step 5, verification.
+
+---
+
+## Speed-up and OpenRouter route (2026-11-05, Amendments A1/A2)
+
+**Why it was slow (measured):** six LLM calls ran one after another (20–60 s each with
+default thinking); Gemini returned 503 "high demand"; then the free-tier quota (20 requests
+per day per model) ran out, and the retry logic waited up to 60 s per attempt although the
+provider said "retry in ~19 h". A run took over 10 minutes.
+
+**Changes:**
+- **All LLM schema fields required.** Gemini omitted optional fields, so values and quotes
+  were missing. On the real paper this took evidenced claims from 11/70 to 41/42 (all
+  exact quotes). `PROMPT_VERSION` → `extraction-v3`.
+- **3 merged calls, run in parallel** (overview+metadata, methods+terminology,
+  experiments+outlook); selection and assembly stay sequential, so claim IDs are stable.
+- **Low reasoning effort** (`LLM_THINKING_LEVEL=low`): the verification call used 862
+  output tokens instead of 2,655.
+- **Fail fast:** a retry hint over 60 s or HTTP 402 → `quota_exhausted`, no waiting; at
+  most one retry for server errors. Measured: a run with no credit now ends in ~1 s
+  instead of minutes.
+- **OpenRouter transport** (Amendment A2): same model `google/gemini-3.8-flash`, strict
+  JSON Schema, chosen automatically for an `sk-or-` key. Verified: model access, schema
+  accepted, exact quote returned, prompt injection ignored.
+- Output limit raised to 16,384 tokens (thinking counts toward it).
+
+**Tests:** 330 passed, 2 skipped (8 new OpenRouter transport tests).
+
+**Blocked:** the OpenRouter account has **$0 credit** (`total_credits: 0`; the $50 shown
+is only the key's spending cap), so a full real analysis on the merged 3-call design has
+not run yet. Re-run after credit is added.

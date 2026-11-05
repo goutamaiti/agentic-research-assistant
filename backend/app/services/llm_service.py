@@ -111,12 +111,24 @@ def _retry_delay_seconds(details: Any) -> float | None:
 class GeminiTransport:
     """``models.generate_content`` with ``response_json_schema`` (google-genai SDK)."""
 
-    def __init__(self, *, api_key: str, model_id: str, timeout_seconds: float) -> None:
+    def __init__(
+        self,
+        *,
+        api_key: str,
+        model_id: str,
+        timeout_seconds: float,
+        thinking_level: str = "default",
+    ) -> None:
         from google import genai
         from google.genai import types
 
         self._types = types
         self.model_id = model_id
+        self._thinking = (
+            None
+            if thinking_level == "default"
+            else types.ThinkingConfig(thinking_level=thinking_level.upper())
+        )
         # The key is passed explicitly so a stray GOOGLE_API_KEY in the environment (which
         # the SDK would otherwise prefer) cannot select a different account.
         self._client = genai.Client(
@@ -141,6 +153,7 @@ class GeminiTransport:
             response_json_schema=json_schema,
             temperature=temperature,
             max_output_tokens=max_output_tokens,
+            thinking_config=self._thinking,
         )
         try:
             response = self._client.models.generate_content(
@@ -215,6 +228,153 @@ class GeminiTransport:
         )
 
 
+# ----- OpenRouter transport -------------------------------------------------------------
+
+
+class OpenRouterTransport:
+    """Gemini through OpenRouter's OpenAI-compatible chat API, with a strict JSON Schema.
+
+    ``provider.require_parameters`` makes OpenRouter use only providers that honour the
+    response schema, so the structured-output contract is the same as on the Gemini route.
+    """
+
+    URL = "https://openrouter.ai/api/v1/chat/completions"
+
+    def __init__(
+        self,
+        *,
+        api_key: str,
+        model_id: str,
+        timeout_seconds: float,
+        thinking_level: str = "default",
+        client: Any = None,
+    ) -> None:
+        import httpx
+
+        self.model_id = model_id
+        self._reasoning = (
+            None
+            if thinking_level == "default"
+            else {"effort": "low" if thinking_level == "minimal" else thinking_level}
+        )
+        self._client = client or httpx.Client(timeout=timeout_seconds)
+        self._headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+            "X-Title": "Agentic Research Assistant",
+        }
+
+    def generate(
+        self,
+        *,
+        system_instruction: str,
+        prompt: str,
+        json_schema: dict[str, Any],
+        temperature: float,
+        max_output_tokens: int,
+    ) -> LLMResponse:
+        body: dict[str, Any] = {
+            "model": self.model_id,
+            "messages": [
+                {"role": "system", "content": system_instruction},
+                {"role": "user", "content": prompt},
+            ],
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": {"name": "extraction", "strict": True, "schema": json_schema},
+            },
+            "temperature": temperature,
+            "max_tokens": max_output_tokens,
+            "provider": {"require_parameters": True},
+        }
+        if self._reasoning:
+            body["reasoning"] = self._reasoning
+        try:
+            response = self._client.post(self.URL, headers=self._headers, json=body)
+        except Exception as exc:
+            if "timeout" in type(exc).__name__.lower():
+                raise LLMError("timeout", "The model request timed out.", retryable=True) from exc
+            raise LLMError(
+                "transport_error", f"Model request failed ({type(exc).__name__}).", retryable=True
+            ) from exc
+        try:
+            payload = response.json()
+        except ValueError:
+            payload = {}
+        # OpenRouter can also report errors inside a 200 body.
+        error = payload.get("error") if isinstance(payload, dict) else None
+        status = (
+            response.status_code
+            if response.status_code != 200 or not error
+            else (int(error.get("code") or 500) if str(error.get("code", "")).isdigit() else 500)
+        )
+        if status != 200:
+            raise self._error(status, response.headers.get("retry-after"))
+        return self._to_response(payload)
+
+    def _error(self, status: int, retry_after: str | None) -> LLMError:
+        if status == 429:
+            delay = float(retry_after) if retry_after and retry_after.isdigit() else None
+            return LLMError(
+                "rate_limited",
+                "The model provider rate-limited the request.",
+                retryable=True,
+                retry_after=delay,
+            )
+        if status in (401, 403):
+            return LLMError("auth_failed", "The OpenRouter API key was rejected.")
+        if status == 402:
+            return LLMError("quota_exhausted", "The OpenRouter account has no credit left.")
+        if status == 404:
+            return LLMError("model_not_found", f"Model {self.model_id!r} is not available.")
+        if status >= 500 or status in (408, 502, 503):
+            return LLMError(
+                "provider_error", "The model provider returned a server error.", retryable=True
+            )
+        return LLMError("bad_request", f"The model rejected the request (HTTP {status}).")
+
+    @staticmethod
+    def _to_response(payload: dict[str, Any]) -> LLMResponse:
+        choices = payload.get("choices") or []
+        if not choices:
+            raise LLMError("empty_response", "The model returned no content.", retryable=True)
+        choice = choices[0]
+        finish = str(choice.get("finish_reason") or choice.get("native_finish_reason") or "")
+        if finish == "content_filter" or any(r in finish.upper() for r in _BLOCKED_FINISH_REASONS):
+            raise LLMError("blocked", f"The model declined to answer ({finish}).")
+        if finish == "length" or "MAX_TOKENS" in finish.upper():
+            raise LLMError("truncated", "The model output was cut off at the token limit.")
+        text = (choice.get("message") or {}).get("content")
+        if not text:
+            raise LLMError("empty_response", "The model returned no content.", retryable=True)
+        usage = payload.get("usage") or {}
+        return LLMResponse(
+            text=text,
+            # OpenRouter's completion_tokens already include reasoning tokens.
+            usage=LLMUsage(
+                input_tokens=usage.get("prompt_tokens"),
+                output_tokens=usage.get("completion_tokens"),
+            ),
+            model_version=payload.get("model"),
+        )
+
+
+def build_transport(settings: Any) -> LLMTransport | None:
+    """The transport for the configured provider, or None without an API key."""
+    key = settings.llm_api_key
+    if key is None:
+        return None
+    common = {
+        "api_key": key.get_secret_value(),
+        "model_id": settings.llm_model_id,
+        "timeout_seconds": settings.llm_timeout_seconds,
+        "thinking_level": settings.llm_thinking_level,
+    }
+    if settings.resolved_llm_provider == "openrouter":
+        return OpenRouterTransport(**common)
+    return GeminiTransport(**common)
+
+
 # ----- Service --------------------------------------------------------------------------
 
 
@@ -282,6 +442,13 @@ class LLMService:
                     max_output_tokens=self.max_output_tokens,
                 )
             except LLMError as exc:
+                if exc.retry_after is not None and exc.retry_after > _MAX_BACKOFF_SECONDS:
+                    # E.g. a daily quota: waiting minutes cannot help, so fail at once.
+                    raise LLMError(
+                        "quota_exhausted",
+                        "The model provider's usage quota is used up "
+                        f"(retry in about {exc.retry_after / 3600:.1f} h).",
+                    ) from exc
                 if not exc.retryable or transient_failures >= self.max_retries:
                     raise
                 transient_failures += 1

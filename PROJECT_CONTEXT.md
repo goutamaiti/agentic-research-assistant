@@ -1931,3 +1931,20 @@ here stays as specified. Phases 1–2 are complete and Phase 3 is implemented.
 
 Single-paper scope, evidence-first behaviour, no fabrication, separation of author and
 system content, and honest reporting (§23) are unchanged.
+
+------------------------------------------------------------------------
+
+# Amendment A2 — LLM access through OpenRouter (approved 2026-11-05)
+
+**Reason:** the user switched to an OpenRouter API key. The direct Gemini API free tier
+allows only 20 requests per day per model and was returning 503 "high demand".
+
+- **Model unchanged:** Gemini 3.8 Flash, reached as `google/gemini-3.8-flash` on OpenRouter.
+- **Route:** OpenRouter's chat API with a strict JSON Schema (`response_format`
+  `json_schema`, `provider.require_parameters`), replacing the Google GenAI SDK for this
+  key. The Google SDK route stays available (`LLM_PROVIDER=gemini`).
+- **Selection:** `LLM_PROVIDER=auto` (default) uses OpenRouter when the key starts with
+  `sk-or-` (in `OPENROUTER_API_KEY` or `GEMINI_API_KEY`), otherwise the Google SDK.
+- **Speed settings (also approved):** three merged extraction calls run in parallel;
+  reasoning effort "low"; quota errors fail at once; at most one retry for server errors.
+- Pricing and credit are the user's OpenRouter account; no costs are promised here.

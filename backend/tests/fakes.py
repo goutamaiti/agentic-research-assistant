@@ -95,18 +95,18 @@ def first_sentence(text: str) -> str:
 class FakeLLMTransport:
     """Scripted stand-in for the Gemini transport.
 
-    ``responder(task, prompt, schema)`` returns the JSON-able answer (or raises an
-    ``LLMError``). The task is recognised from the response schema's top-level fields.
-    Every call is recorded in ``calls``.
+    Each physical call covers several sub-tasks (3 calls per paper). ``responder(subtask,
+    prompt, schema)`` is called once per sub-task ("overview", "metadata", "methods",
+    "terminology", "experiments", "outlook") and the answers are merged. It may raise an
+    ``LLMError`` or return a string (raw, possibly invalid, output). Every physical call is
+    recorded in ``calls`` with its primary task name and sub-tasks.
     """
 
+    # Schema field that identifies a physical call -> (task name, sub-tasks).
     TASKS = {
-        "abstract": "overview",
-        "methodology": "methods",
-        "results": "experiments",
-        "limitations": "outlook",
-        "technical_terminology": "terminology",
-        "authors": "metadata",
+        "abstract": ("overview", ("overview", "metadata")),
+        "methodology": ("methods", ("methods", "terminology")),
+        "results": ("experiments", ("experiments", "outlook")),
     }
 
     def __init__(self, responder) -> None:
@@ -118,12 +118,27 @@ class FakeLLMTransport:
 
         from app.services.llm_service import LLMResponse, LLMUsage
 
-        task = next(t for key, t in self.TASKS.items() if key in json_schema["properties"])
-        self.calls.append(
-            {"task": task, "prompt": prompt, "system": system_instruction, "schema": json_schema}
+        task, subtasks = next(
+            spec for key, spec in self.TASKS.items() if key in json_schema["properties"]
         )
-        answer = self.responder(task, prompt, json_schema)
-        text = answer if isinstance(answer, str) else json.dumps(answer)
+        self.calls.append(
+            {
+                "task": task,
+                "subtasks": subtasks,
+                "prompt": prompt,
+                "system": system_instruction,
+                "schema": json_schema,
+            }
+        )
+        merged: dict = {}
+        text = None
+        for subtask in subtasks:
+            answer = self.responder(subtask, prompt, json_schema)
+            if isinstance(answer, str):
+                text = answer
+                break
+            merged.update(answer)
+        text = text if text is not None else json.dumps(merged)
         return LLMResponse(
             text=text,
             usage=LLMUsage(input_tokens=len(prompt) // 4, output_tokens=len(text) // 4),

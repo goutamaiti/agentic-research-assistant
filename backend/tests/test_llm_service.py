@@ -188,13 +188,18 @@ def test_retry_after_hint_is_honoured() -> None:
     assert sleeps == [13.0]
 
 
-def test_retry_after_hint_is_capped_at_sixty_seconds() -> None:
+def test_long_retry_after_fails_fast_as_quota_exhausted() -> None:
+    """A retry hint beyond 60 s (e.g. a daily quota) is not waited for at all."""
     transport = ScriptedTransport(
         [LLMError("rate_limited", "x", retryable=True, retry_after=3600.0), _ok()]
     )
     sleeps: list[float] = []
-    _service(transport, sleeps).generate_structured(Simple, system_instruction="s", prompt="p")
-    assert sleeps == [60.0]
+    with pytest.raises(LLMError) as info:
+        _service(transport, sleeps).generate_structured(Simple, system_instruction="s", prompt="p")
+    assert info.value.code == "quota_exhausted"
+    assert info.value.retryable is False
+    assert sleeps == []
+    assert len(transport.calls) == 1
 
 
 @pytest.mark.parametrize(
