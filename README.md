@@ -7,7 +7,9 @@ each claim against the source passages, and answers questions about that paper o
 - Requirements and scope: [PROJECT_CONTEXT.md](PROJECT_CONTEXT.md) (master specification)
 - Progress, decisions, and test results: [DEVELOPMENT_LOG.md](DEVELOPMENT_LOG.md)
 
-**Status:** Phase 1 (project foundation) only. Nothing processes papers yet.
+**Status:** Phases 1-2 implemented: upload, PDF processing (text, OCR fallback, pages,
+sections, deterministic metadata) and indexing (ChromaDB + BM25). LLM extraction,
+verification and the research assistant come in later phases.
 
 ## Prerequisites
 
@@ -15,7 +17,7 @@ each claim against the source passages, and answers questions about that paper o
 |------|--------------|-------|
 | Python | 3.12.x | `requires-python >=3.12` |
 | Node.js | 24.x (Vite 8 needs ^20.19 or >=22.12) | npm 11 |
-| Tesseract OCR | not yet required | needed from Phase 2 for scanned pages |
+| Tesseract OCR | optional system install | needed only to read **scanned** pages; without it they are marked `ocr_unavailable` and the paper is `partially_indexed`. On Windows, e.g. the UB-Mannheim build; set `TESSERACT_CMD` if it is not on PATH |
 
 ## Setup
 
@@ -61,6 +63,18 @@ If the backend runs on a different port, start Vite with `BACKEND_URL` set, for 
 `BACKEND_URL=http://127.0.0.1:8010 npm run dev` (PowerShell:
 `$env:BACKEND_URL="http://127.0.0.1:8010"; npm run dev`).
 
+## Processing a paper (API)
+
+```bash
+curl -F "file=@paper.pdf;type=application/pdf" http://127.0.0.1:8000/api/documents/upload
+curl -X POST http://127.0.0.1:8000/api/documents/<id>/analyze      # returns 202 at once
+curl http://127.0.0.1:8000/api/documents/<id>/status               # poll: stages + metrics
+curl http://127.0.0.1:8000/api/documents/<id>                      # pages, sections, metadata
+```
+
+The first analysis downloads the embedding model (~420 MB) from Hugging Face into the
+standard cache. Interactive API docs: http://127.0.0.1:8000/docs.
+
 ## Tests and linting
 
 ```bash
@@ -68,7 +82,9 @@ cd backend && .venv/Scripts/python -m pytest && .venv/Scripts/ruff check . && .v
 cd frontend && npm test && npm run build
 ```
 
-Routine tests never call the Gemini API.
+Routine tests use synthetic PDFs and fake embedding/OCR services: no network, no model
+download, no Gemini calls. The real embedding model is exercised by opt-in integration
+tests: `RUN_INTEGRATION=1 .venv/Scripts/python -m pytest -m integration`.
 
 ## Configuration
 
@@ -85,6 +101,7 @@ variables, and the browser talks only to same-origin `/api` routes.
 backend/    FastAPI app (app/), Alembic migrations (alembic/), tests (tests/)
 frontend/   React + Vite + Tailwind CSS v4
 storage/    uploads/, chroma/, reports/, database/   (runtime data, not committed)
+evaluation/ test_papers/ (public papers for manual checks, not committed)
 ```
 
 Modules from the specification's folder structure are added in the phase that needs them.

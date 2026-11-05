@@ -45,6 +45,15 @@ def health(request: Request) -> HealthResponse:
         status="configured" if settings.llm_configured else "not_configured",
         detail=f"model={settings.gemini_model}",
     )
+    # Neither check loads a model or runs OCR; they only report what is installed/selected.
+    components["embeddings"] = ComponentHealth(
+        status="configured", detail=f"model={state.embedder.model_id} (loaded on first use)"
+    )
+    ocr_ready = state.ocr_engine.is_available()
+    components["ocr"] = ComponentHealth(
+        status="ok" if ocr_ready else "not_configured",
+        detail=None if ocr_ready else "Tesseract not found; scanned pages cannot be read.",
+    )
 
     core_ok = all(components[name].status == "ok" for name in ("database", "vector_store"))
     return HealthResponse(

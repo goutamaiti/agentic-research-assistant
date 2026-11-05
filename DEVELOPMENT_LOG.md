@@ -7,8 +7,8 @@ Running record of implementation work. Requirements live in
 
 ## Phase 1: Project foundation (2026-11-03)
 
-**Status:** Complete. All Phase 1 acceptance criteria were checked (see below). Nothing is
-committed to git yet.
+**Status:** Complete. All Phase 1 acceptance criteria were checked (see below). Committed
+as `6e6c2b1` on 2026-11-05.
 
 ### Environment inspected
 
@@ -208,3 +208,260 @@ enforcement, Alembic upgrade, and Chroma persistence round-trip and deletion.
 public, text-based test papers. Start with the `documents` / `document_pages` models plus the
 first Alembic migration, then upload validation (content-type sniffing, 30 MB limit,
 encrypted/corrupt rejection, SHA-256 duplicate detection).
+
+---
+
+## Phase 2: PDF processing and indexing (2026-11-05)
+
+**Status:** Implemented and tested. Four of the five acceptance criteria are verified on a
+real paper. The OCR criterion is verified with a test double only, because Tesseract is not
+installed on the development machine (see "Acceptance criteria").
+
+### Planned scope (stated before coding)
+
+Upload, validation, SHA-256 duplicate detection, page-wise extraction, scanned-page
+detection with OCR fallback, section identification, deterministic metadata,
+section-aware chunking, embeddings, ChromaDB and BM25 indexing. No LLM calls, no LangGraph
+(Phase 4), no RRF fusion (Phase 6), no deletion endpoint (Phase 7), no frontend pages
+(Phase 8).
+
+### Completed tasks
+
+1. **Data model and migration:** SQLAlchemy models, plus the first Alembic migration
+   `9354e57a3371`. It creates `documents`, `document_pages`, `document_sections`,
+   `document_chunks` and `processing_runs`, with FK `ON DELETE CASCADE`, unique constraints
+   (SHA-256, page index and chunk index per document), and CHECK constraints generated from
+   the status enums. Timestamps are timezone-aware UTC (`UTCDateTime`). Migrations run
+   automatically at startup.
+2. **Upload** (`POST /api/documents/upload`):
+   - the size limit is enforced while streaming (413);
+   - the content is sniffed for `%PDF-` regardless of filename or content type (415);
+   - encrypted (422 `encrypted_pdf`), corrupt or repaired-to-empty (422 `corrupt_pdf`) and
+     empty files (400) are rejected;
+   - a duplicate SHA-256 returns 409 `duplicate_document` with the existing `document_id`
+     (offer reuse);
+   - files get a safe internal name `<uuid>.pdf`; the stored path is relative to `storage/`;
+   - no temp or orphan files are left on any failure path.
+3. **Analysis run** (`POST /api/documents/{id}/analyze` returns 202 with `workflow_run_id`;
+   `GET /status`):
+   - four recorded stages: `upload_validation`, `document_extraction`,
+     `section_identification`, `retrieval_indexing`;
+   - each stage stores its timings and metrics; a failure marks later stages `skipped` and
+     the document `failed`, with an actionable message;
+   - unreadable pages give `partially_indexed`;
+   - one background worker thread; claiming a document for a run is atomic, so two runs can
+     never be queued at once;
+   - on startup, unfinished runs are marked `interrupted`;
+   - a failed run removes stale chunks and vectors, so a failed document never looks
+     indexed.
+4. **PDF parsing** (PyMuPDF):
+   - text is extracted page by page with font size and boldness;
+   - same-baseline fragments are merged (LaTeX "1" + "Introduction");
+   - vertical or rotated text is excluded (arXiv margin stamps, figure labels) and counted
+     in page warnings;
+   - rotated pages use unrotated coordinates.
+5. **Scanned pages / OCR:**
+   - a page counts as scanned when it has images and fewer than `OCR_MIN_TEXT_CHARS`
+     characters;
+   - those pages are OCR'd with Tesseract (pytesseract), and the render size is capped at
+     about 40 MP;
+   - each page gets a status: `extracted`, `ocr_extracted`, `ocr_failed`,
+     `ocr_unavailable` or `empty`.
+6. **Page numbers:** `pdf_page_index` (zero-based) is always kept. The
+   `displayed_page_number` comes from PDF page labels, or from header/footer numbers that
+   agree with the offset most pages share. Otherwise it is `null` and never guessed.
+7. **Boilerplate:** running headers/footers repeated on ≥40% of pages are detected, and
+   page numbers are removed from body text.
+8. **Sections:** detected from numbered headings that are styled as headings, known
+   academic section names, and styled unnumbered headings that are not repeated text. The
+   result is a hierarchy (levels and parents) with canonical types (`introduction`,
+   `methodology`, `results`, …), plus an implicit `Front matter` section.
+9. **Metadata (deterministic, explicit evidence only):**
+   - title from the first-page layout, or plausible PDF metadata;
+   - DOI only when labelled in front matter or margins;
+   - year only from a front-matter ©/copyright/"published" statement;
+   - abstract from its section, keywords from a "Keywords"/"Index Terms" line, and
+     language from a heuristic;
+   - authors only from PDF metadata (marked `ambiguous` if "Last, First" cannot be split
+     safely);
+   - every field has a status, a source, a page and the evidence text.
+10. **Chunking:**
+    - chunks never cross sections and paragraphs are kept whole;
+    - an oversized paragraph is split at sentences, and only an oversized sentence by
+      words;
+    - overlap is whole sentences;
+    - sizes are counted with the embedding model's own tokenizer: target 220 / overlap 40 /
+      max 256 word pieces;
+    - each chunk keeps its PDF page span, displayed page numbers and section;
+    - References and Acknowledgements are stored but not embedded (`INDEX_REFERENCES`).
+11. **Indexing:**
+    - `multi-qa-mpnet-base-cos-v1` (normalised vectors), loaded lazily in the worker;
+    - one cosine ChromaDB collection per document (`doc_<id>`) with the spec §10.9
+      metadata;
+    - the stored vector count is checked against the number of chunks before the document
+      is reported indexed;
+    - BM25 (`rank-bm25`) is built from the SQLite chunks, with technical tokens kept intact
+      plus their component parts.
+12. **Search (for verification only):** `retrieval_service.search_semantic` /
+    `search_keyword` map hits back to SQLite rows with page and section, and refuse
+    documents that are not indexed.
+13. **Health:** added `embeddings` (configured, not loaded) and `ocr` (Tesseract found or
+    not).
+
+### Technical decisions (for review)
+
+1. **Two added tables** beyond the spec's suggested ones:
+   - `document_sections` gives the section hierarchy a persistent home;
+   - `document_chunks` makes SQLite the source of truth for chunk text and page mapping,
+     so BM25 needs no separate store and later citation checks have exact text.
+   The spec calls its tables "suggested", so this does not change scope.
+2. **PyMuPDF dict extraction rather than `pymupdf4llm`.** Font-level spans give explicit,
+   testable control of page and section provenance.
+3. **The analyze endpoint currently runs processing and indexing only.** It is the same
+   endpoint the spec defines; Phase 4 wraps these stages as LangGraph nodes and adds
+   extraction and verification.
+4. **Chunk sizes are measured in model word pieces**, not words, as spec §6.2 says. The max
+   is 256 rather than "≈250" because the model card says it was trained on inputs up to
+   250 word pieces (truncation is at 512).
+5. **The embedded text is "section title + chunk",** which gives section context, while the
+   stored chunk text stays verbatim for citations. The prefix is dropped if it would
+   exceed the model limit.
+6. **Deterministic metadata is preliminary.** Fields such as authors and venue that
+   parsing cannot establish reliably stay `not_found` with a note. The extraction phase
+   (Phase 3) produces the final `paper_metadata`, with evidence.
+
+### Tests and results
+
+| Check | Result |
+|-------|--------|
+| Backend `pytest` (default) | **141 passed**, 2 skipped (opt-in integration) |
+| Backend `pytest` with `RUN_INTEGRATION=1` (real embedding model) | **143 passed** |
+| `ruff check` / `ruff format --check` | clean |
+| Models vs. migrations (`compare_metadata`) | no differences |
+| Live server (uvicorn, real background thread): upload → analyze → poll `/status` | 202 in 0.2 s; second analyze → 409; stages progressed; indexed after ~25 s |
+| Server log contents | IDs, counts and durations only; no document text, no secrets |
+
+Test files:
+- `test_pdf_parser.py`: validation codes, page numbers, labels, boilerplate, OCR states,
+  hyphenation.
+- `test_structure_and_metadata.py`: section hierarchy and types; metadata statuses,
+  sources and the no-guessing rules.
+- `test_chunker_and_keyword.py`: section boundaries, token caps, sentence overlap, page
+  spans, BM25, Chroma replace/delete/cosine.
+- `test_documents_api.py`: upload errors, duplicates, safe filenames, analyze/status,
+  partial and failed runs, workspace isolation, idempotent re-runs, recovery.
+- `test_review_regressions.py`: one test per confirmed review finding, plus the real-paper
+  layout cases.
+- `test_integration_embeddings.py` (opt-in): real model dimensions and normalisation,
+  tokenizer-based chunk caps, paraphrase retrieval.
+
+The test files were written in parallel by four test-writing agents, which were allowed to
+change tests only. They found 2 app bugs, both fixed: repaired-corrupt PDFs were reported as
+"empty", and `COVID-`/`19` was joined as `COVID- 19`.
+
+### Real-paper check: arXiv:1706.03762 ("Attention Is All You Need", public)
+
+Stored in `evaluation/test_papers/` (git-ignored). 15 pages, 2.2 MB, all with a text layer.
+
+- **First run exposed real layout problems:**
+  - the vertical arXiv stamp was taken as the title and as a heading;
+  - no numbered headings were found ("1" and "Introduction" are separate PDF lines);
+  - figure labels became headings.
+  These were fixed and covered by regression tests.
+- **After the fixes:**
+  - title "Attention Is All You Need" (first-page layout);
+  - 25 sections with the correct hierarchy (e.g. 3.2.1 under 3.2 under 3);
+  - displayed page numbers 2–15 on pages 1–14, and `null` on page 0, which has no printed
+    number;
+  - abstract extracted; DOI, year, keywords and authors `not_found` (none are labelled in
+    the arXiv version, and nothing was guessed);
+  - 61 chunks, 48 indexed (references and acknowledgements excluded), mean 165 and max 234
+    word pieces, 0 over the model limit;
+  - indexing took ~24 s on CPU, including model load.
+- **Retrieval spot checks** (top-1 for both semantic and BM25):
+  - the optimizer/learning-rate question returns section *Optimizer*, PDF page index 6,
+    printed page 7;
+  - the English-to-German BLEU question returns *Machine Translation*, printed page 8;
+  - the self-attention-vs-recurrence question returns *Why Self-Attention*, printed page 6.
+  These are manual spot checks, not an evaluation. Retrieval metrics on annotated papers
+  belong to Phase 9.
+
+### Independent review
+
+A three-lens review (pipeline, provenance, security), followed by an adversarial verifier,
+found 21 candidate issues. **12 were confirmed and fixed, each with a regression test:**
+- *Metadata guessed from body text:* a cited year or a dataset DOI in the body was taken as
+  the paper's own.
+- *Authors split wrongly:* "Last, First" author metadata was broken into fake names.
+- *Rotated pages:* body numbers were deleted as if they were page numbers.
+- *Short pages:* text-only pages were reported as unreadable scans.
+- *BM25 compounds:* searching `bert` did not match `bert-base`.
+- *OCR on huge pages:* there was no render-size cap, so one page could fail the whole run.
+- *Concurrent analyze:* two simultaneous requests could start two runs.
+- *Failed re-runs:* old index counts stayed visible.
+- *Timestamps:* API times had no UTC marker.
+- *Hyphenation:* `state-of-the-art` lost its last hyphen at a line break.
+- *Orphan uploads:* a failed DB commit could leave the uploaded file behind.
+- *Token limit:* the embedding prefix could exceed the model limit; a guard and a metric
+  were added.
+
+**Not fixed (judged speculative or later-phase), recorded here:**
+- the request body is spooled by Starlette before the size check (413 still returned);
+- there is no page-count cap, which the spec does not define;
+- there is no time limit on crafted decompression bombs;
+- a heading merged into the middle of a block is missed;
+- PDF page labels win over contradicting printed numbers.
+
+### Commands run (main ones)
+
+```bash
+alembic revision --autogenerate -m "documents pages sections chunks runs"
+python -m pytest -q ; RUN_INTEGRATION=1 python -m pytest -q
+ruff check . ; ruff format --check .
+curl -L -o evaluation/test_papers/arxiv_1706.03762.pdf https://arxiv.org/pdf/1706.03762
+uvicorn app.main:create_app --factory --port 8010   # live check via .claude/launch.json
+```
+
+Downloads, approved by the user: the embedding model (~420 MB, Hugging Face cache) and the
+arXiv paper (2.2 MB).
+
+### Acceptance criteria
+
+| Criterion | Status | Evidence |
+|-----------|--------|----------|
+| Text-based academic PDF processes successfully | ✅ | arXiv:1706.03762 indexed (above); synthetic papers in tests |
+| Page mappings are preserved | ✅ | PDF index and printed number kept separately on pages and chunks; null when not identifiable; tests for footers, labels, rotation, OCR pages |
+| OCR is attempted on scanned pages | ✅ with a test double | Detection and the OCR path tested with `FakeOcr`; without Tesseract, pages are marked `ocr_unavailable` and the document is `partially_indexed`. **Not yet run with real Tesseract.** |
+| Chunks are searchable | ✅ | Semantic and BM25 search on the real paper and in tests; workspace isolation tested |
+| Indexing errors are reported accurately | ✅ | Embedding and Chroma failures give `failed` with a code; later stages `skipped`; stale index removed; the document never claims to be indexed |
+
+### Known bugs and limitations
+
+- **Tesseract is not installed** here, so real OCR quality and speed are unmeasured.
+- **Section detection is heuristic.** Subsection types are keyword-based: for example
+  "Model Variations" under *Results* is typed `methodology`. Headings with unusual styling
+  can be missed.
+- **Two-column layouts** depend on PyMuPDF's block order. They are untested on real
+  two-column papers so far; the test paper is single-column.
+- **Tables, equations and figures** are kept only as plain text where a text layer exists.
+  Vertical text in figures is dropped, and tables are not extracted as structured data.
+- **Authors and venue** are not identified deterministically and are left to Phase 3. The
+  language check only distinguishes "English" from "unclear".
+- **The model loader contacts huggingface.co** for update checks even when the model is
+  cached. Set `HF_HUB_OFFLINE=1` after the first download for fully offline use.
+- **Indexing is CPU-only:** ~24 s for a 15-page paper, mostly embedding. This is a
+  measurement on one machine, not a benchmark.
+- **There is no delete endpoint yet** (Phase 7). Test data uploaded during the live check
+  remains in `storage/`.
+- **Nothing is committed for Phase 2 yet.**
+
+### Next recommended task
+
+**Phase 3: LLM integration and structured extraction.** Prerequisites:
+- a Gemini API key in `backend/.env`;
+- one real call to decide between `models.generate_content` + `response_json_schema` and
+  the newer Interactions API (see the Phase 1 discussion items);
+- review current Gemini data-use terms before using non-public papers.
+
+Optionally, install Tesseract first and re-run a scanned-paper check to close the OCR
+criterion with the real engine.

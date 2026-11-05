@@ -28,6 +28,7 @@ def configure_logging(level: str = "INFO") -> None:
                 # Third-party libraries that are chatty at INFO.
                 "chromadb": {"level": "WARNING"},
                 "httpx": {"level": "WARNING"},
+                "httpx2": {"level": "WARNING"},
             },
         }
     )

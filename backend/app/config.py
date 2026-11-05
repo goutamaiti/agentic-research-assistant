@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Annotated, Literal
 from urllib.parse import urlencode
 
-from pydantic import Field, SecretStr, field_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 from sqlalchemy.engine import make_url
 
@@ -20,7 +20,10 @@ BACKEND_DIR = Path(__file__).resolve().parents[1]
 PROJECT_ROOT = BACKEND_DIR.parent
 
 APP_NAME = "Agentic Research Assistant"
-APP_VERSION = "0.1.0"
+APP_VERSION = "0.2.0"
+
+# Bump when chunking or indexing behaviour changes, so stored indexes can be identified.
+INDEX_VERSION = "1"
 
 
 class Settings(BaseSettings):
@@ -51,6 +54,24 @@ class Settings(BaseSettings):
     llm_max_retries: int = Field(default=3, ge=0)
 
     embedding_model: str = "sentence-transformers/multi-qa-mpnet-base-cos-v1"
+    embedding_device: str = "cpu"
+    embedding_batch_size: int = Field(default=16, gt=0)
+
+    # --- Document processing (starting values from the specification; tune by evaluation)
+    tesseract_cmd: str | None = None  # path to tesseract executable if not on PATH
+    ocr_language: str = "eng"
+    ocr_dpi: int = Field(default=300, ge=72)
+    ocr_min_text_chars: int = Field(default=40, ge=0)  # below this a page counts as scanned
+    chunk_target_tokens: int = Field(default=220, gt=0)
+    chunk_overlap_tokens: int = Field(default=40, ge=0)
+    # Hard cap per chunk. The embedding model truncates at 512 word pieces and was trained
+    # on inputs up to 250, so chunks stay near that length.
+    chunk_max_tokens: int = Field(default=256, gt=0)
+    index_references: bool = False
+
+    # --- Retrieval
+    semantic_candidates: int = Field(default=8, gt=0)
+    bm25_candidates: int = Field(default=8, gt=0)
 
     max_verification_retries: int = Field(default=2, ge=0)
 
@@ -80,6 +101,18 @@ class Settings(BaseSettings):
     @staticmethod
     def _resolve(path: Path) -> Path:
         return path if path.is_absolute() else (PROJECT_ROOT / path).resolve()
+
+    @model_validator(mode="after")
+    def _check_chunk_sizes(self) -> Settings:
+        if self.chunk_overlap_tokens >= self.chunk_target_tokens:
+            raise ValueError("chunk_overlap_tokens must be smaller than chunk_target_tokens")
+        if self.chunk_max_tokens < self.chunk_target_tokens:
+            raise ValueError("chunk_max_tokens must be at least chunk_target_tokens")
+        return self
+
+    @property
+    def max_upload_bytes(self) -> int:
+        return self.max_upload_mb * 1024 * 1024
 
     @property
     def storage_path(self) -> Path:

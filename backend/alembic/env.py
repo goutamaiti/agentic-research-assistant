@@ -6,14 +6,12 @@ from alembic import context
 from sqlalchemy import pool
 
 from app.config import get_settings
+from app.database import models  # noqa: F401  (registers tables on Base.metadata)
 from app.database.connection import Base, create_db_engine
-
-# From Phase 2 onward, import app.database.models here so its tables register on
-# Base.metadata for autogenerate.
 
 config = context.config
 
-if config.config_file_name is not None:
+if config.config_file_name is not None and not config.attributes.get("skip_logging_config"):
     fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 target_metadata = Base.metadata

@@ -7,6 +7,7 @@ requires-python = ">=3.12"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra"
+markers = ["integration: uses the real embedding model (downloads it); run with RUN_INTEGRATION=1"]
 
 [tool.ruff]
 line-length = 100
@@ -15,7 +16,12 @@ extend-exclude = [".venv", "alembic/versions"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP", "S"]
-ignore = []
+# UP046: Pydantic generic models use typing.Generic.
+ignore = ["UP046"]
+
+[tool.ruff.lint.flake8-bugbear]
+# FastAPI dependency markers are designed to be used as argument defaults.
+extend-immutable-calls = ["fastapi.Depends", "fastapi.File", "fastapi.Query", "fastapi.Form"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["S101", "S105", "S106"]

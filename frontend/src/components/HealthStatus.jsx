@@ -18,6 +18,8 @@ const COMPONENT_NAMES = {
   database: 'Database (SQLite)',
   vector_store: 'Vector store (ChromaDB)',
   llm: 'Language model (Gemini)',
+  embeddings: 'Embedding model',
+  ocr: 'OCR for scanned pages (Tesseract)',
 }
 
 function StatusBadge({ state }) {

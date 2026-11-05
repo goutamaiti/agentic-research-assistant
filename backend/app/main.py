@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from typing import Any
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
@@ -19,24 +20,40 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from app.api import health
+from app.api import analysis, documents, health
 from app.config import APP_NAME, APP_VERSION, Settings, get_settings
 from app.database.connection import create_db_engine, create_session_factory
+from app.database.migrations import upgrade_database
+from app.document_processing.ocr import OcrEngine, TesseractOcr
+from app.errors import AppError
 from app.logging_config import configure_logging
+from app.retrieval.embeddings import Embedder, SentenceTransformerEmbedder
 from app.retrieval.vector_store import create_chroma_client
 from app.schemas.api import ErrorDetail, ErrorResponse
+from app.services.analysis_service import AnalysisService
+from app.services.jobs import JobRunner, ThreadJobRunner
 
 logger = logging.getLogger(__name__)
 
 
 def _error(
-    status_code: int, code: str, message: str, headers: dict[str, str] | None = None
+    status_code: int,
+    code: str,
+    message: str,
+    headers: dict[str, str] | None = None,
+    details: dict[str, Any] | None = None,
 ) -> JSONResponse:
-    body = ErrorResponse(error=ErrorDetail(code=code, message=message))
-    return JSONResponse(status_code=status_code, content=body.model_dump(), headers=headers)
+    body = ErrorResponse(error=ErrorDetail(code=code, message=message, details=details))
+    return JSONResponse(
+        status_code=status_code, content=body.model_dump(exclude_none=True), headers=headers
+    )
 
 
 def _register_error_handlers(app: FastAPI) -> None:
+    @app.exception_handler(AppError)
+    async def app_error(_request: Request, exc: AppError) -> JSONResponse:
+        return _error(exc.status_code, exc.code, exc.message, details=exc.details)
+
     @app.exception_handler(StarletteHTTPException)
     async def http_error(_request: Request, exc: StarletteHTTPException) -> JSONResponse:
         # Keep protocol headers such as Allow (405) that the default handler would send.
@@ -56,22 +73,53 @@ def _register_error_handlers(app: FastAPI) -> None:
         return _error(500, "internal_error", "An unexpected server error occurred.")
 
 
-def create_app(settings: Settings | None = None) -> FastAPI:
-    """Build the application. Pass ``settings`` to override configuration (e.g. in tests)."""
+def create_app(
+    settings: Settings | None = None,
+    *,
+    embedder: Embedder | None = None,
+    ocr_engine: OcrEngine | None = None,
+    job_runner: JobRunner | None = None,
+) -> FastAPI:
+    """Build the application.
+
+    External services are injectable so tests can replace the embedding model, OCR
+    engine and background runner; by default the real implementations are used.
+    """
     settings = settings or get_settings()
     configure_logging(settings.log_level)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         settings.ensure_storage_dirs()
+        upgrade_database(settings.sqlalchemy_url)
         engine = create_db_engine(settings.sqlalchemy_url)
+        runner = job_runner or ThreadJobRunner()
         try:
-            app.state.settings = settings
-            app.state.db_engine = engine
-            app.state.session_factory = create_session_factory(engine)
-            app.state.chroma_client = create_chroma_client(
+            session_factory = create_session_factory(engine)
+            chroma_client = create_chroma_client(
                 settings.chroma_path, anonymized_telemetry=settings.anonymized_telemetry
             )
+            app.state.settings = settings
+            app.state.db_engine = engine
+            app.state.session_factory = session_factory
+            app.state.chroma_client = chroma_client
+            app.state.embedder = embedder or SentenceTransformerEmbedder(
+                settings.embedding_model,
+                device=settings.embedding_device,
+                batch_size=settings.embedding_batch_size,
+            )
+            app.state.ocr_engine = ocr_engine or TesseractOcr(
+                settings.tesseract_cmd, settings.ocr_language
+            )
+            app.state.analysis_service = AnalysisService(
+                settings,
+                session_factory,
+                chroma_client,
+                app.state.embedder,
+                app.state.ocr_engine,
+                runner,
+            )
+            app.state.analysis_service.recover()
             logger.info(
                 "Started %s %s (env=%s, llm_configured=%s, model=%s)",
                 APP_NAME,
@@ -82,6 +130,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
             yield
         finally:
+            runner.shutdown()
             engine.dispose()
             logger.info("Shutdown complete")
 
@@ -94,4 +143,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     _register_error_handlers(app)
     app.include_router(health.router, prefix="/api")
+    app.include_router(documents.router, prefix="/api")
+    app.include_router(analysis.router, prefix="/api")
     return app
