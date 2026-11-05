@@ -47,3 +47,28 @@ export async function request(path, { fetchImpl = fetch, ...init } = {}) {
 export function getHealth(options) {
   return request('/health', options)
 }
+
+const postJson = (path, data) =>
+  request(path, {
+    method: 'POST',
+    headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+    body: JSON.stringify(data ?? {}),
+  })
+
+export const api = {
+  listDocuments: () => request('/documents'),
+  getDocument: (id) => request(`/documents/${id}`),
+  uploadDocument: (file) => {
+    const form = new FormData()
+    form.append('file', file)
+    return request('/documents/upload', { method: 'POST', body: form })
+  },
+  analyze: (id) => postJson(`/documents/${id}/analyze`),
+  getStatus: (id) => request(`/documents/${id}/status`),
+  getAnalysis: (id) => request(`/documents/${id}/analysis`),
+  getEvidence: (id) => request(`/documents/${id}/evidence`),
+  ask: (id, question, conversationId) =>
+    postJson(`/documents/${id}/chat`, { question, conversation_id: conversationId ?? null }),
+  getHistory: (id) => request(`/documents/${id}/chat/history`),
+  createReport: (id, format) => postJson(`/documents/${id}/report`, { format }),
+}

@@ -30,3 +30,6 @@ evaluation/test_papers/*
 .idea/
 .DS_Store
 Thumbs.db
+
+# Development-only fake server data (backend/scripts/dev_fake_server.py)
+storage_dev_fake/

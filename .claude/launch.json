@@ -9,6 +9,13 @@
       "autoPort": false
     },
     {
+      "name": "backend-dev-fake",
+      "runtimeExecutable": "backend/.venv/Scripts/python.exe",
+      "runtimeArgs": ["backend/scripts/dev_fake_server.py", "storage_dev_fake", "8010"],
+      "port": 8010,
+      "autoPort": false
+    },
+    {
       "name": "frontend",
       "runtimeExecutable": "npm",
       "runtimeArgs": ["--prefix", "frontend", "run", "dev", "--", "--port", "5180"],

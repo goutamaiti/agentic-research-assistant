@@ -782,3 +782,25 @@ The real API is still untested for this step (Gemini returned 503).
 **Tests:** 340 passed, 2 skipped (`tests/test_assistant_and_reports.py`).
 
 **Not done (A1):** DOCX export; section filters in retrieval; reranker.
+
+---
+
+## Step 7: Frontend (2026-11-05, Amendment A1)
+
+**Done:** four pages in React + Tailwind with hash routing (no new dependencies):
+- **Upload & status** (`#/`): upload a PDF (starts the analysis), paper list with status,
+  live stage-by-stage progress (polls `/status`), re-analyse, and backend health.
+- **Analysis** (`#/analysis/<id>`): metadata (missing values shown as "not found in the
+  paper"), all 14 categories with status, each claim with origin label, verification
+  status and page; JSON/PDF report download.
+- **Evidence** (`#/evidence/<id>`): every claim with status, explanation and quoted
+  passages with page and section; filter by verification status.
+- **Assistant** (`#/assistant/<id>`): chat with expandable page citations,
+  insufficient-evidence notice, separately labelled general explanations, history.
+
+Statuses are always text plus a symbol, never colour alone (`StatusBadge`).
+
+**Checked in the browser** with `backend/scripts/dev_fake_server.py` (development-only:
+scripted test fakes, separate `storage_dev_fake/`), because the Gemini API returned 503:
+all four pages load; the planted fabricated claim shows as "Unsupported — quote not found";
+the assistant answer shows a page citation. Frontend tests 4/4, build OK.

@@ -1,44 +1,66 @@
 import { useCallback, useEffect, useState } from 'react'
-import HealthStatus from './components/HealthStatus.jsx'
-import { getHealth } from './services/api.js'
+import AnalysisPage from './pages/AnalysisPage.jsx'
+import AssistantPage from './pages/AssistantPage.jsx'
+import EvidencePage from './pages/EvidencePage.jsx'
+import UploadPage from './pages/UploadPage.jsx'
 
-// Phase 1 shell: confirms the frontend can reach the backend. The dashboard, upload,
-// analysis, evidence and assistant pages are built in later phases.
+// Minimal hash routing: #/ , #/analysis/<id>, #/evidence/<id>, #/assistant/<id>.
+function parseHash() {
+  const [page = '', documentId = null] = window.location.hash.replace(/^#\/?/, '').split('/')
+  return { page, documentId }
+}
+
+const TABS = [
+  ['analysis', 'Analysis'],
+  ['evidence', 'Evidence'],
+  ['assistant', 'Assistant'],
+]
+
 export default function App() {
-  const [health, setHealth] = useState(null)
-  const [error, setError] = useState(null)
-  const [loading, setLoading] = useState(true)
-
-  const checkHealth = useCallback(async () => {
-    setLoading(true)
-    try {
-      setHealth(await getHealth())
-      setError(null)
-    } catch (err) {
-      setHealth(null)
-      setError(err)
-    } finally {
-      setLoading(false)
-    }
-  }, [])
+  const [route, setRoute] = useState(parseHash)
 
   useEffect(() => {
-    checkHealth()
-  }, [checkHealth])
+    const onChange = () => setRoute(parseHash())
+    window.addEventListener('hashchange', onChange)
+    return () => window.removeEventListener('hashchange', onChange)
+  }, [])
+
+  const navigate = useCallback((path) => {
+    window.location.hash = `/${path}`
+  }, [])
+
+  const { page, documentId } = route
+  let content = <UploadPage navigate={navigate} />
+  if (documentId && page === 'analysis') content = <AnalysisPage documentId={documentId} />
+  if (documentId && page === 'evidence') content = <EvidencePage documentId={documentId} />
+  if (documentId && page === 'assistant') content = <AssistantPage documentId={documentId} />
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900">
       <header className="border-b border-slate-200 bg-white">
-        <div className="mx-auto max-w-3xl px-4 py-5">
-          <h1 className="text-xl font-semibold">Agentic Research Assistant</h1>
-          <p className="mt-1 text-sm text-slate-600">
-            Single-paper analysis with evidence-supported extraction and verification status.
-          </p>
+        <div className="mx-auto flex max-w-4xl flex-wrap items-center justify-between gap-3 px-4 py-4">
+          <button type="button" onClick={() => navigate('')} className="text-left">
+            <h1 className="text-xl font-semibold">Agentic Research Assistant</h1>
+            <p className="text-sm text-slate-600">Single-paper analysis with evidence-supported extraction.</p>
+          </button>
+          {documentId && (
+            <nav className="flex gap-1" aria-label="Paper views">
+              {TABS.map(([name, label]) => (
+                <button
+                  key={name}
+                  type="button"
+                  onClick={() => navigate(`${name}/${documentId}`)}
+                  aria-current={page === name ? 'page' : undefined}
+                  className={`rounded-md px-3 py-1.5 text-sm ${page === name ? 'bg-slate-900 text-white' : 'text-slate-700 hover:bg-slate-100'}`}
+                >
+                  {label}
+                </button>
+              ))}
+            </nav>
+          )}
         </div>
       </header>
-      <main className="mx-auto max-w-3xl px-4 py-8">
-        <HealthStatus health={health} error={error} loading={loading} onRetry={checkHealth} />
-      </main>
+      <main className="mx-auto max-w-4xl px-4 py-8">{content}</main>
     </div>
   )
 }
