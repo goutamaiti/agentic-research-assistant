@@ -1,8 +1,10 @@
 """Analysis runs: start, execute stages, record status, recover after interruption.
 
-Phase 2 implements the document-processing and indexing stages of the analysis workflow
-(spec §8.1 steps 1-4). Knowledge extraction and verification stages are added in later
-phases, when this sequence is orchestrated by LangGraph.
+Stages (spec §8.1): upload validation, document extraction, section identification and
+retrieval indexing are *fatal* (the run stops and the document is ``failed``); knowledge
+extraction is *non-fatal* (the document stays indexed and searchable, and the stage
+records why extraction failed or was skipped). Verification is added in Phase 5, and
+LangGraph orchestration in Phase 4.
 """
 
 from __future__ import annotations
@@ -19,6 +21,7 @@ from chromadb.api import ClientAPI
 from sqlalchemy import delete, select, update
 from sqlalchemy.orm import Session, sessionmaker
 
+from app.agents.extraction_agent import ExtractionAgent
 from app.config import INDEX_VERSION, Settings
 from app.database.models import (
     Document,
@@ -26,6 +29,8 @@ from app.database.models import (
     DocumentPage,
     DocumentSection,
     DocumentStatus,
+    Extraction,
+    ExtractionRunStatus,
     PageExtractionStatus,
     ProcessingRun,
     RunStatus,
@@ -61,6 +66,7 @@ STAGES = (
     "document_extraction",
     "section_identification",
     "retrieval_indexing",
+    "knowledge_extraction",
 )
 ACTIVE_STATUSES = (DocumentStatus.QUEUED, DocumentStatus.PROCESSING)
 # Sections that are kept and chunked but not embedded unless configured otherwise.
@@ -91,6 +97,8 @@ class _RunContext:
     structure: DocumentStructure | None = None
     boilerplate: set[str] = field(default_factory=set)
     partial_reasons: list[str] = field(default_factory=list)
+    extraction: str | None = None  # completed | partial | failed | skipped
+    extraction_detail: str | None = None
 
 
 class AnalysisService:
@@ -102,6 +110,7 @@ class AnalysisService:
         embedder: Embedder,
         ocr_engine: OcrEngine | None,
         job_runner: JobRunner,
+        extraction_agent: ExtractionAgent | None = None,
     ) -> None:
         self.settings = settings
         self.session_factory = session_factory
@@ -109,6 +118,7 @@ class AnalysisService:
         self.embedder = embedder
         self.ocr_engine = ocr_engine
         self.job_runner = job_runner
+        self.extraction_agent = extraction_agent
 
     # ----- Public API -------------------------------------------------------------------
 
@@ -150,7 +160,14 @@ class AnalysisService:
         return run_id
 
     def recover(self) -> int:
-        """Mark runs left unfinished by a previous process as interrupted."""
+        """Handle runs left unfinished by a previous process.
+
+        Unfinished stages are marked ``interrupted``. If a processing stage was interrupted,
+        the document is ``failed`` and partial results are removed, exactly as for a failed
+        stage. If only knowledge extraction was interrupted, the index is complete, so the
+        document stays indexed (and searchable) with an explanation.
+        """
+        first_stale: dict[str, tuple[str, str]] = {}  # document -> (run id, earliest stage)
         with self.session_factory() as session:
             stale = session.scalars(
                 select(ProcessingRun).where(
@@ -164,6 +181,26 @@ class AnalysisService:
                     "code": "interrupted",
                     "message": "The application stopped before this stage finished.",
                 }
+                if run.stage in STAGES:
+                    known = first_stale.get(run.document_id)
+                    if known is None or STAGES.index(run.stage) < STAGES.index(known[1]):
+                        first_stale[run.document_id] = (run.workflow_run_id, run.stage)
+            session.commit()
+
+        for document_id, (run_id, stage) in first_stale.items():
+            if stage == "knowledge_extraction":
+                self._set_document(document_id, *self._status_after_interrupted_extraction(run_id))
+            else:
+                self._discard_stale_results(document_id, failed_stage=stage)
+                self._set_document(
+                    document_id,
+                    DocumentStatus.FAILED,
+                    f"Analysis was interrupted during {stage.replace('_', ' ')}. "
+                    "Start the analysis again.",
+                )
+
+        # Any other document left in an active state has no usable run.
+        with self.session_factory() as session:
             session.execute(
                 update(Document)
                 .where(Document.status.in_(ACTIVE_STATUSES))
@@ -178,6 +215,23 @@ class AnalysisService:
             logger.warning("Marked %d unfinished stage(s) as interrupted", len(stale))
         return len(stale)
 
+    def _status_after_interrupted_extraction(self, run_id: str) -> tuple[DocumentStatus, str]:
+        with self.session_factory() as session:
+            extraction_stage = session.scalar(
+                select(ProcessingRun).where(
+                    ProcessingRun.workflow_run_id == run_id,
+                    ProcessingRun.stage == "document_extraction",
+                )
+            )
+            partial = extraction_stage is not None and extraction_stage.status == RunStatus.PARTIAL
+        detail = (
+            "Knowledge extraction was interrupted; start the analysis again to extract "
+            "structured knowledge."
+        )
+        if partial:
+            return DocumentStatus.PARTIALLY_INDEXED, f"Indexed with limitations. {detail}"
+        return DocumentStatus.INDEXED, f"Document indexed. {detail}"
+
     def run(self, document_id: str, workflow_run_id: str) -> None:
         """Execute all stages of one run. Never raises: failures are recorded."""
         context = _RunContext(document_id=document_id, workflow_run_id=workflow_run_id)
@@ -188,6 +242,7 @@ class AnalysisService:
             ("section_identification", self._stage_section_identification),
             ("retrieval_indexing", self._stage_retrieval_indexing),
         ]
+        later_stages = [*stages, ("knowledge_extraction", None)]
         for position, (stage, func) in enumerate(stages):
             self._update_stage(context, stage, status=RunStatus.RUNNING, started=True)
             started = time.perf_counter()
@@ -210,7 +265,7 @@ class AnalysisService:
                     error=error,
                     metrics={"duration_ms": _elapsed_ms(started)},
                 )
-                for skipped, _ in stages[position + 1 :]:
+                for skipped, _ in later_stages[position + 1 :]:
                     self._update_stage(context, skipped, status=RunStatus.SKIPPED)
                 self._discard_stale_results(document_id, failed_stage=stage)
                 self._set_document(
@@ -224,15 +279,63 @@ class AnalysisService:
                 context, stage, status=outcome.status, completed=True, metrics=outcome.metrics
             )
 
-        if context.partial_reasons:
-            self._set_document(
-                document_id,
-                DocumentStatus.PARTIALLY_INDEXED,
-                "Indexed with limitations: " + "; ".join(context.partial_reasons),
-            )
-        else:
-            self._set_document(document_id, DocumentStatus.INDEXED, "Document indexed.")
+        self._run_extraction_stage(context)
+        self._set_document(document_id, *self._final_status(context))
         logger.info("Run %s finished for document %s", workflow_run_id, document_id)
+
+    def _run_extraction_stage(self, context: _RunContext) -> None:
+        """Run knowledge extraction; failures are recorded but never fail the document."""
+        stage = "knowledge_extraction"
+        self._update_stage(context, stage, status=RunStatus.RUNNING, started=True)
+        started = time.perf_counter()
+        try:
+            outcome = self._stage_knowledge_extraction(context)
+        except Exception as exc:
+            error = self._describe_error(exc)
+            logger.error(
+                "Run %s knowledge extraction failed: %s",
+                context.workflow_run_id,
+                error["code"],
+                exc_info=True,
+            )
+            context.extraction, context.extraction_detail = "failed", error["message"]
+            self._update_stage(
+                context,
+                stage,
+                status=RunStatus.FAILED,
+                completed=True,
+                error=error,
+                metrics={"duration_ms": _elapsed_ms(started)},
+            )
+            return
+        outcome.metrics["duration_ms"] = _elapsed_ms(started)
+        self._update_stage(
+            context, stage, status=outcome.status, completed=True, metrics=outcome.metrics
+        )
+
+    @staticmethod
+    def _final_status(context: _RunContext) -> tuple[DocumentStatus, str]:
+        limitations = list(context.partial_reasons)
+        if context.extraction in ("completed", "partial"):
+            if context.extraction == "partial":
+                limitations.append(context.extraction_detail or "some extraction tasks failed")
+            if limitations:
+                return (
+                    DocumentStatus.PARTIALLY_ANALYZED,
+                    "Analysed with limitations: " + "; ".join(limitations),
+                )
+            return DocumentStatus.ANALYZED, "Document indexed and analysed."
+        prefix = {
+            "skipped": "Knowledge extraction skipped",
+            "failed": "Knowledge extraction failed",
+        }.get(context.extraction or "", "Knowledge extraction not run")
+        detail = f"{prefix}: {context.extraction_detail or 'no details'}."
+        if limitations:
+            return (
+                DocumentStatus.PARTIALLY_INDEXED,
+                "Indexed with limitations: " + "; ".join(limitations) + ". " + detail,
+            )
+        return DocumentStatus.INDEXED, f"Document indexed. {detail}"
 
     # ----- Stages -----------------------------------------------------------------------
 
@@ -468,6 +571,8 @@ class AnalysisService:
             session.execute(
                 delete(DocumentChunk).where(DocumentChunk.document_id == context.document_id)
             )
+            # Analyses of a previous index cite chunks that are being replaced.
+            session.execute(delete(Extraction).where(Extraction.document_id == context.document_id))
             session.add_all(rows)
             document = get_document(session, context.document_id)
             document.index_version = INDEX_VERSION
@@ -496,6 +601,59 @@ class AnalysisService:
             }
         )
 
+    def _stage_knowledge_extraction(self, context: _RunContext) -> StageOutcome:
+        if self.extraction_agent is None:
+            context.extraction = "skipped"
+            context.extraction_detail = "no Gemini API key is configured (GEMINI_API_KEY)"
+            return StageOutcome(status=RunStatus.SKIPPED, metrics={"reason": "llm_not_configured"})
+        result = self.extraction_agent.extract(context.document_id, context.workflow_run_id)
+        meta = result.processing_metadata
+        status = ExtractionRunStatus(meta.processing_status)
+        with self.session_factory() as session:
+            session.add(
+                Extraction(
+                    document_id=context.document_id,
+                    workflow_run_id=context.workflow_run_id,
+                    schema_version=result.schema_version,
+                    model_id=meta.model_id,
+                    prompt_version=meta.prompt_version,
+                    embedding_model_id=meta.embedding_model_id,
+                    index_version=meta.index_version,
+                    result_json=result.model_dump(mode="json"),
+                    status=status,
+                )
+            )
+            session.commit()
+
+        context.extraction = status.value
+        failed_tasks = [t.task for t in meta.tasks if t.task_status == "failed"]
+        if status == ExtractionRunStatus.FAILED:
+            context.extraction_detail = "every extraction task failed; see stage metrics"
+        elif failed_tasks:
+            context.extraction_detail = "extraction task(s) failed: " + ", ".join(failed_tasks)
+        matches: dict[str, int] = {}
+        for record in result.evidence_registry:
+            matches[record.quote_match.value] = matches.get(record.quote_match.value, 0) + 1
+        metrics: dict[str, Any] = {
+            "model_id": meta.model_id,
+            "prompt_version": meta.prompt_version,
+            "schema_version": result.schema_version,
+            "tasks": [t.model_dump(exclude_none=True) for t in meta.tasks],
+            "llm_calls": sum(t.attempts for t in meta.tasks),
+            "input_tokens": sum(t.input_tokens or 0 for t in meta.tasks),
+            "output_tokens": sum(t.output_tokens or 0 for t in meta.tasks),
+            "claims": len(result.claims),
+            "evidence_records": len(result.evidence_registry),
+            "evidence_quote_match": matches,
+            "warnings": meta.warnings,
+        }
+        run_status = {
+            ExtractionRunStatus.COMPLETED: RunStatus.COMPLETED,
+            ExtractionRunStatus.PARTIAL: RunStatus.PARTIAL,
+            ExtractionRunStatus.FAILED: RunStatus.FAILED,
+        }[status]
+        return StageOutcome(status=run_status, metrics=metrics)
+
     # ----- Persistence helpers -----------------------------------------------------------
 
     def _discard_stale_results(self, document_id: str, *, failed_stage: str) -> None:
@@ -513,6 +671,7 @@ class AnalysisService:
             logger.exception("Could not remove vectors of failed document %s", document_id)
         with self.session_factory() as session:
             session.execute(delete(DocumentChunk).where(DocumentChunk.document_id == document_id))
+            session.execute(delete(Extraction).where(Extraction.document_id == document_id))
             if order <= STAGES.index("section_identification"):
                 session.execute(
                     delete(DocumentSection).where(DocumentSection.document_id == document_id)

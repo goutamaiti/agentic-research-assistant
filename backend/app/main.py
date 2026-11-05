@@ -20,6 +20,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from app.agents.extraction_agent import ExtractionAgent
 from app.api import analysis, documents, health
 from app.config import APP_NAME, APP_VERSION, Settings, get_settings
 from app.database.connection import create_db_engine, create_session_factory
@@ -32,6 +33,7 @@ from app.retrieval.vector_store import create_chroma_client
 from app.schemas.api import ErrorDetail, ErrorResponse
 from app.services.analysis_service import AnalysisService
 from app.services.jobs import JobRunner, ThreadJobRunner
+from app.services.llm_service import GeminiTransport, LLMService
 
 logger = logging.getLogger(__name__)
 
@@ -73,17 +75,37 @@ def _register_error_handlers(app: FastAPI) -> None:
         return _error(500, "internal_error", "An unexpected server error occurred.")
 
 
+def _default_llm_service(settings: Settings) -> LLMService | None:
+    if settings.gemini_api_key is None:
+        return None
+    transport = GeminiTransport(
+        api_key=settings.gemini_api_key.get_secret_value(),
+        model_id=settings.gemini_model,
+        timeout_seconds=settings.llm_timeout_seconds,
+    )
+    return LLMService(
+        transport,
+        model_id=settings.gemini_model,
+        max_retries=settings.llm_max_retries,
+        invalid_output_retries=settings.llm_invalid_output_retries,
+        temperature=settings.llm_temperature,
+        max_output_tokens=settings.llm_max_output_tokens,
+    )
+
+
 def create_app(
     settings: Settings | None = None,
     *,
     embedder: Embedder | None = None,
     ocr_engine: OcrEngine | None = None,
     job_runner: JobRunner | None = None,
+    llm_service: LLMService | None = None,
 ) -> FastAPI:
     """Build the application.
 
     External services are injectable so tests can replace the embedding model, OCR
-    engine and background runner; by default the real implementations are used.
+    engine, background runner and LLM; by default the real implementations are used.
+    Without a Gemini API key there is no LLM service and knowledge extraction is skipped.
     """
     settings = settings or get_settings()
     configure_logging(settings.log_level)
@@ -111,6 +133,20 @@ def create_app(
             app.state.ocr_engine = ocr_engine or TesseractOcr(
                 settings.tesseract_cmd, settings.ocr_language
             )
+            llm = llm_service or _default_llm_service(settings)
+            app.state.llm_service = llm
+            extraction_agent = (
+                ExtractionAgent(
+                    llm,
+                    session_factory,
+                    chroma_client,
+                    app.state.embedder,
+                    token_budget=settings.extraction_passage_token_budget,
+                    candidates=settings.semantic_candidates,
+                )
+                if llm is not None
+                else None
+            )
             app.state.analysis_service = AnalysisService(
                 settings,
                 session_factory,
@@ -118,6 +154,7 @@ def create_app(
                 app.state.embedder,
                 app.state.ocr_engine,
                 runner,
+                extraction_agent=extraction_agent,
             )
             app.state.analysis_service.recover()
             logger.info(

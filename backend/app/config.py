@@ -51,7 +51,12 @@ class Settings(BaseSettings):
     gemini_api_key: SecretStr | None = None
     gemini_model: str = "gemini-3.8-flash"
     llm_timeout_seconds: float = Field(default=60.0, gt=0)
-    llm_max_retries: int = Field(default=3, ge=0)
+    llm_max_retries: int = Field(default=3, ge=0)  # timeouts, rate limits, server errors
+    llm_invalid_output_retries: int = Field(default=1, ge=0)  # unparseable/invalid JSON
+    llm_temperature: float = Field(default=0.1, ge=0.0, le=2.0)
+    llm_max_output_tokens: int = Field(default=8192, gt=0)
+    # Upper bound on passage tokens sent per extraction task (keeps prompts focused).
+    extraction_passage_token_budget: int = Field(default=6000, gt=0)
 
     embedding_model: str = "sentence-transformers/multi-qa-mpnet-base-cos-v1"
     embedding_device: str = "cpu"

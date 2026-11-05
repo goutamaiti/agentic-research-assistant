@@ -74,3 +74,218 @@ class FakeOcr:
             raise OcrError("fake OCR failure")
         lines = [OcrLine(text=t, y0=100 + 40 * i, y1=120 + 40 * i) for i, t in enumerate(self.TEXT)]
         return OcrResult(lines=lines, mean_confidence=91.0)
+
+
+# ----- LLM ------------------------------------------------------------------------------
+
+_PASSAGE = re.compile(
+    r'<passage id="(P\d+)" section="([^"]*)" page="[^"]*">\n(.*?)\n</passage>', re.DOTALL
+)
+
+
+def prompt_passages(prompt: str) -> list[tuple[str, str, str]]:
+    """(passage_id, section, text) for each passage in an extraction prompt."""
+    return _PASSAGE.findall(prompt)
+
+
+def first_sentence(text: str) -> str:
+    return re.split(r"(?<=[.!?])\s", text, maxsplit=1)[0]
+
+
+class FakeLLMTransport:
+    """Scripted stand-in for the Gemini transport.
+
+    ``responder(task, prompt, schema)`` returns the JSON-able answer (or raises an
+    ``LLMError``). The task is recognised from the response schema's top-level fields.
+    Every call is recorded in ``calls``.
+    """
+
+    TASKS = {
+        "abstract": "overview",
+        "methodology": "methods",
+        "results": "experiments",
+        "limitations": "outlook",
+        "technical_terminology": "terminology",
+        "authors": "metadata",
+    }
+
+    def __init__(self, responder) -> None:
+        self.responder = responder
+        self.calls: list[dict] = []
+
+    def generate(self, *, system_instruction, prompt, json_schema, temperature, max_output_tokens):
+        import json
+
+        from app.services.llm_service import LLMResponse, LLMUsage
+
+        task = next(t for key, t in self.TASKS.items() if key in json_schema["properties"])
+        self.calls.append(
+            {"task": task, "prompt": prompt, "system": system_instruction, "schema": json_schema}
+        )
+        answer = self.responder(task, prompt, json_schema)
+        text = answer if isinstance(answer, str) else json.dumps(answer)
+        return LLMResponse(
+            text=text,
+            usage=LLMUsage(input_tokens=len(prompt) // 4, output_tokens=len(text) // 4),
+            model_version="fake-model-001",
+        )
+
+
+def grounded_responder(task: str, prompt: str, schema: dict) -> dict:
+    """A plausible answer quoting real passages, with deliberate traps:
+    a fabricated quote, an unsupported inference, an injected app-owned field and a wrong
+    passage ID."""
+    passages = prompt_passages(prompt)
+    pid, _, text = passages[0]
+    quote = first_sentence(text)
+    support = [{"passage_id": pid, "quote": quote}]
+
+    def field(value: str) -> dict:
+        return {"value": value, "status": "extracted", "support": support}
+
+    empty = {"value": None, "status": "not_found", "support": []}
+    if task == "overview":
+        return {
+            "abstract": {
+                "status": "extracted",
+                "stated_problem": field(quote),
+                "approach": empty,
+                "principal_findings": empty,
+                "conclusion": empty,
+            },
+            "research_problem": {
+                "status": "extracted",
+                "problem_statement": field(quote),
+                "application_context": empty,
+                "significance": empty,
+                "specific_challenge": empty,
+            },
+            "objectives": {
+                "status": "extracted",
+                "main_objective": field(quote),
+                "specific_objectives": [],
+            },
+            "motivation": {"status": "not_found", "reasons": [], "need": empty, "shortcomings": []},
+            "background": {
+                "status": "extracted",
+                "summary": field(quote),
+                "prior_approaches": [{"name": "BM25", "description": quote, "support": support}],
+            },
+        }
+    if task == "methods":
+        return {
+            "methodology": {
+                "status": "extracted",
+                "overall_approach": field(quote),
+                "workflow": empty,
+                "stages": [field(quote)],
+                "implementation_procedure": empty,
+                "experimental_methodology": empty,
+            },
+            "algorithms_and_models": {
+                "status": "extracted",
+                "items": [
+                    {
+                        "name": "Reciprocal rank fusion",
+                        "category": "rank fusion",
+                        "role": "combines retrievers",
+                        "parameters": [{"name": "k", "value": "60", "support": support}],
+                        "support": support,
+                    }
+                ],
+            },
+            "methodology_breakdown": {
+                "status": "extracted",
+                "steps": [
+                    {"step_number": 1, "operation": "Chunk the document", "support": support}
+                ],
+            },
+        }
+    if task == "experiments":
+        return {
+            "dataset_and_experiments": {
+                "status": "partially_extracted",
+                "datasets": [
+                    {"name": "synthetic benchmark", "size": "forty questions", "support": support}
+                ],
+                "environment": empty,
+                "hardware_software": empty,
+                "experimental_parameters": [],
+                "evaluation_protocol": field(quote),
+            },
+            "results": {
+                "status": "extracted",
+                "items": [
+                    {
+                        "kind": "numerical",
+                        "description": quote,
+                        "metric": "recall at five",
+                        "value": 0.82,
+                        "value_text": "0.82",
+                        "baseline": "dense retrieval",
+                        "support": support,
+                    },
+                    {  # fabricated quote: must not become a page citation
+                        "kind": "qualitative",
+                        "description": "The method is the best ever.",
+                        "support": [{"passage_id": pid, "quote": "best ever published anywhere"}],
+                    },
+                ],
+            },
+        }
+    if task == "outlook":
+        return {
+            "limitations": {
+                "status": "extracted",
+                "author_acknowledged": [field(quote)],
+                # an inference without support: must be dropped
+                "system_inferred": [
+                    {"value": "Only one dataset was used.", "status": "extracted", "support": []}
+                ],
+            },
+            "future_scope": {
+                "status": "extracted",
+                "author_proposed": [field(quote)],
+                "system_suggested": [],
+            },
+            "research_contributions": {
+                "status": "extracted",
+                "author_claimed": [field(quote)],
+                "system_inferred": [field(quote)],
+            },
+        }
+    if task == "terminology":
+        return {
+            "technical_terminology": {
+                "status": "extracted",
+                "terms": [
+                    {  # tries to fill an app-owned field: must be ignored
+                        "term": "BM25",
+                        "definition": "a ranking function",
+                        "definition_origin": "paper_definition",
+                        "support": support,
+                        "claim_ids": ["CLM_999"],
+                    },
+                    {  # cites a wrong passage ID: the linker should still find the quote
+                        "term": "Embedding",
+                        "definition": "a vector representation",
+                        "definition_origin": "general_explanation",
+                        "support": [{"passage_id": "P99", "quote": quote}],
+                    },
+                ],
+            }
+        }
+    return {  # metadata
+        "authors": {
+            "names": ["Ada Example", "Brian Placeholder"],
+            "status": "extracted",
+            "support": [{"passage_id": pid, "quote": "Ada Example and Brian Placeholder"}],
+        },
+        "journal_or_conference": {  # unsupported: must not be used
+            "value": "Imaginary Conference",
+            "status": "extracted",
+            "support": [{"passage_id": pid, "quote": "Proceedings of Nowhere"}],
+        },
+        "publication_year": {"year": None, "status": "not_found", "support": []},
+        "keywords": {"keywords": ["ignored"], "status": "extracted", "support": support},
+    }

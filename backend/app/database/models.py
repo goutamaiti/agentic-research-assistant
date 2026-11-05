@@ -73,6 +73,14 @@ class DocumentStatus(StrEnum):
     PROCESSING = "processing"
     INDEXED = "indexed"
     PARTIALLY_INDEXED = "partially_indexed"  # indexed, but some pages could not be read
+    ANALYZED = "analyzed"  # indexed and knowledge extraction completed
+    PARTIALLY_ANALYZED = "partially_analyzed"  # extraction partial, or indexing was partial
+    FAILED = "failed"
+
+
+class ExtractionRunStatus(StrEnum):
+    COMPLETED = "completed"
+    PARTIAL = "partial"  # some extraction tasks failed; the others are kept
     FAILED = "failed"
 
 
@@ -146,6 +154,12 @@ class Document(Base):
         cascade="all, delete-orphan",
         passive_deletes=True,
         order_by="ProcessingRun.id",
+    )
+    extractions: Mapped[list[Extraction]] = relationship(
+        back_populates="document",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        order_by="Extraction.id",
     )
 
 
@@ -231,3 +245,31 @@ class ProcessingRun(Base):
     metrics_json: Mapped[dict[str, Any] | None] = mapped_column(JSON)
 
     document: Mapped[Document] = relationship(back_populates="runs")
+
+
+class Extraction(Base):
+    """A validated structured analysis of one document (spec §10.3).
+
+    ``result_json`` is the complete ``ExtractionResult``. The versions used to produce it
+    are stored alongside so results stay reproducible and comparable.
+    """
+
+    __tablename__ = "extractions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    document_id: Mapped[str] = mapped_column(
+        ForeignKey("documents.id", ondelete="CASCADE"), index=True
+    )
+    workflow_run_id: Mapped[str | None] = mapped_column(String(32))
+    schema_version: Mapped[str] = mapped_column(String(16))
+    model_id: Mapped[str] = mapped_column(String(128))
+    prompt_version: Mapped[str] = mapped_column(String(64))
+    embedding_model_id: Mapped[str | None] = mapped_column(String(255))
+    index_version: Mapped[str | None] = mapped_column(String(32))
+    result_json: Mapped[dict[str, Any]] = mapped_column(JSON)
+    status: Mapped[ExtractionRunStatus] = mapped_column(
+        _enum(ExtractionRunStatus, "extraction_status")
+    )
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
+
+    document: Mapped[Document] = relationship(back_populates="extractions")

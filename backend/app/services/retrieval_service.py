@@ -20,7 +20,12 @@ from app.retrieval.keyword_search import KeywordIndex
 from app.retrieval.vector_store import semantic_search
 from app.services.document_service import get_document
 
-SEARCHABLE_STATUSES = (DocumentStatus.INDEXED, DocumentStatus.PARTIALLY_INDEXED)
+SEARCHABLE_STATUSES = (
+    DocumentStatus.INDEXED,
+    DocumentStatus.PARTIALLY_INDEXED,
+    DocumentStatus.ANALYZED,
+    DocumentStatus.PARTIALLY_ANALYZED,
+)
 
 
 @dataclass(slots=True)

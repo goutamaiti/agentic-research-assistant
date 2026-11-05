@@ -7,7 +7,13 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.database.models import DocumentStatus, PageExtractionStatus, RunStatus
+from app.database.models import (
+    DocumentStatus,
+    ExtractionRunStatus,
+    PageExtractionStatus,
+    RunStatus,
+)
+from app.schemas.extraction import ExtractionResult
 from app.schemas.paper import DocumentMetadata
 
 # "configured" means settings are present but the service was not contacted.
@@ -111,6 +117,16 @@ class StageStatus(BaseModel):
     completed_at: datetime | None
     error: dict[str, Any] | None = Field(default=None, validation_alias="error_json")
     metrics: dict[str, Any] | None = Field(default=None, validation_alias="metrics_json")
+
+
+class AnalysisResponse(BaseModel):
+    """The latest validated structured analysis of a document."""
+
+    document_id: str
+    extraction_id: int
+    status: ExtractionRunStatus
+    created_at: datetime
+    result: ExtractionResult
 
 
 class StatusResponse(BaseModel):

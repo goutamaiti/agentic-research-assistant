@@ -31,6 +31,7 @@ EXPECTED_TABLES = {
     "document_sections",
     "document_chunks",
     "processing_runs",
+    "extractions",
 }
 
 

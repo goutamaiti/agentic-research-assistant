@@ -42,12 +42,25 @@ def run_migrations_offline() -> None:
 def run_migrations_online() -> None:
     engine = create_db_engine(_database_url(), poolclass=pool.NullPool)
     with engine.connect() as connection:
+        is_sqlite = connection.dialect.name == "sqlite"
+        if is_sqlite:
+            # Batch mode rebuilds tables (copy, DROP, rename). With foreign keys enforced,
+            # the DROP would fire ON DELETE CASCADE and wipe child rows. The pragma must be
+            # set outside a transaction, so it is issued before migrations begin.
+            connection.exec_driver_sql("PRAGMA foreign_keys=OFF")
+            connection.commit()
         # render_as_batch lets Alembic emulate ALTER TABLE on SQLite.
         context.configure(
             connection=connection, target_metadata=target_metadata, render_as_batch=True
         )
         with context.begin_transaction():
             context.run_migrations()
+        if is_sqlite:
+            violations = connection.exec_driver_sql("PRAGMA foreign_key_check").fetchall()
+            connection.exec_driver_sql("PRAGMA foreign_keys=ON")
+            connection.commit()
+            if violations:
+                raise RuntimeError(f"Migration left {len(violations)} foreign-key violation(s)")
     engine.dispose()
 
 

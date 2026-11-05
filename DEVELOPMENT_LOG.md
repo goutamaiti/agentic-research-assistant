@@ -431,13 +431,35 @@ arXiv paper (2.2 MB).
 |-----------|--------|----------|
 | Text-based academic PDF processes successfully | ✅ | arXiv:1706.03762 indexed (above); synthetic papers in tests |
 | Page mappings are preserved | ✅ | PDF index and printed number kept separately on pages and chunks; null when not identifiable; tests for footers, labels, rotation, OCR pages |
-| OCR is attempted on scanned pages | ✅ with a test double | Detection and the OCR path tested with `FakeOcr`; without Tesseract, pages are marked `ocr_unavailable` and the document is `partially_indexed`. **Not yet run with real Tesseract.** |
+| OCR is attempted on scanned pages | ✅ (real Tesseract, 2026-11-05) | Detection and the OCR path tested with `FakeOcr`; then verified with real Tesseract 5.4.0 (see "Update" below). Without Tesseract, pages are marked `ocr_unavailable` and the document is `partially_indexed`. |
 | Chunks are searchable | ✅ | Semantic and BM25 search on the real paper and in tests; workspace isolation tested |
 | Indexing errors are reported accurately | ✅ | Embedding and Chroma failures give `failed` with a code; later stages `skipped`; stale index removed; the document never claims to be indexed |
 
+### Update 2026-11-05: real OCR verified
+
+Tesseract was not installed during Phase 2 because it is a system program, not a pip
+package: installing it changes the machine outside the project and needed the user's
+approval. With that approval it was installed:
+
+- `winget install --id UB-Mannheim.TesseractOCR` → Tesseract 5.4.0.20240606 at
+  `C:\Program Files\Tesseract-OCR\` (installer hash verified by winget; English and OSD
+  language data included). The installer does not add it to PATH, so
+  `TESSERACT_CMD=C:/Program Files/Tesseract-OCR/tesseract.exe` is set in `backend/.env`
+  (machine-specific, git-ignored).
+- **Scanned page (image only, 150 dpi):** status `ocr_extracted`, mean word confidence
+  95.7. All checked numbers and phrases were read exactly (`91.4`, `87.2`, `0.01`,
+  "convolutional", "learning rate").
+- **Full pipeline:** a text paper plus one scanned page is now `indexed` (previously
+  `partially_indexed`); `document_extraction` reports `ocr_pages: [3]`, no unreadable
+  pages. `/api/health` reports OCR `ok`.
+- Limitation seen: OCR text is stored one line per block, so headings on scanned pages
+  are only detected by name or numbering (no font information). Chunking is unaffected.
+  OCR quality on real scanned papers (skew, noise, two columns) is still unmeasured.
+
 ### Known bugs and limitations
 
-- **Tesseract is not installed** here, so real OCR quality and speed are unmeasured.
+- **Real OCR is verified on a synthetic scan only** (see "Update" above); quality on real
+  scanned papers is unmeasured.
 - **Section detection is heuristic.** Subsection types are keyword-based: for example
   "Model Variations" under *Results* is typed `methodology`. Headings with unusual styling
   can be missed.
@@ -465,3 +487,194 @@ arXiv paper (2.2 MB).
 
 Optionally, install Tesseract first and re-run a scanned-paper check to close the OCR
 criterion with the real engine.
+
+---
+
+## Phase 3: LLM integration and structured extraction (2026-11-05)
+
+**Status:** Implemented and tested against a scripted fake LLM. **Not yet verified against
+the real Gemini API**, because no API key is configured. The user chose "build now, verify
+later"; the real-API check is the remaining acceptance step (see "Acceptance criteria").
+
+### Planned scope (stated before coding)
+
+A reusable LLM service; Pydantic schemas for the full output contract (spec §5); versioned,
+category-specific prompts; extraction of the 12 primary categories and 4 extra
+capabilities; claim/evidence references; explicit missing and ambiguous states. Not in
+scope: claim verification (Phase 5), LangGraph orchestration (Phase 4), RRF fusion
+(Phase 6), relational claims/evidence tables (Phase 7).
+
+### Completed tasks
+
+1. **Schemas** (`schemas/evidence.py`, `schemas/extraction.py`):
+   - claims (`CLM_###`) and evidence records (`EVD_###`) with stable IDs, the spec's status
+     and origin enums, and `quote_match` (`exact`, `normalized`, `not_found`,
+     `pdf_metadata`);
+   - every category has a `status` and an app-owned `task_status`, so "absent from the
+     paper" is never confused with "could not be processed";
+   - author-stated and system-inferred content live in separate lists (limitations, future
+     scope, contributions); term definitions carry `definition_origin`;
+   - numerical results keep metric, value as printed, unit, condition, dataset and
+     baseline, and their claim text includes the numbers;
+   - `llm_json_schema()` gives the model an inlined schema with app-owned fields removed.
+2. **LLM service** (`services/llm_service.py`):
+   - `GeminiTransport` uses `models.generate_content` with `response_json_schema`; the key
+     is passed explicitly, so a stray `GOOGLE_API_KEY` is never used;
+   - bounded retries with exponential backoff for timeouts, 429 and 5xx, honouring
+     `retryDelay`; bounded re-asks for invalid JSON; no retry for auth errors, bad
+     requests or blocked responses;
+   - output is parsed and validated with Pydantic in application code; app-owned fields the
+     model returns are stripped;
+   - token usage (including thinking tokens) and the served model version are recorded.
+3. **Prompts** (`prompts/extraction.py`, `PROMPT_VERSION = "extraction-v1"`): a shared
+   system instruction and 6 task prompts. Paper text is passed only inside `<passage>`
+   tags as untrusted data; tag look-alikes in any letter case are neutralised and every
+   attribute (section name, page label) is sanitised.
+4. **Evidence linking** (`services/evidence_linker.py`): each quote the model cites is
+   matched against the stored chunk text, exactly and then after normalising whitespace,
+   quotes, dashes, ligatures and case. The exact source span is stored and located on its
+   PDF page. A quote that cannot be found gets **no** page, section or chunk, so it can
+   never become a citation. A wrong passage ID is corrected only when the quote is found
+   in another supplied passage.
+5. **Extraction agent** (`agents/extraction_agent.py`):
+   - 6 fixed tasks per paper (overview, methods, experiments, outlook, terminology,
+     metadata), each one LLM call; no open-ended loop;
+   - passages: chunks from matching sections plus semantic and BM25 hits, deduplicated,
+     within a token budget, in reading order;
+   - a failed task marks only its own categories `failed`; the rest are still extracted;
+   - system-inferred items without a located quote are dropped; empty items are dropped;
+     unlocated claims are kept with a warning (Phase 5 classifies them);
+   - deterministic metadata takes precedence; the LLM fills only missing fields, and only
+     with a located quote;
+   - the complete `ExtractionResult` is validated before it is stored.
+6. **Pipeline and API:**
+   - new non-fatal stage `knowledge_extraction`: without a key it is `skipped`; on failure
+     the document stays indexed and searchable;
+   - new statuses `analyzed` and `partially_analyzed`;
+   - new `extractions` table (result JSON plus model, prompt, schema, embedding and index
+     versions) and migration `1f0d6c2eab6b`;
+   - `GET /api/documents/{id}/analysis` returns the latest validated analysis;
+   - stale analyses are removed when the index is rebuilt, when a run fails, or when a
+     processing stage was interrupted.
+7. **Real-API check script:** `backend/scripts/verify_gemini.py` makes two small calls on
+   invented text: one tiny schema, and the full `OverviewResponse` schema with an
+   injection sentence.
+
+### Technical decisions (for review)
+
+1. **Structured output via `models.generate_content` + `response_json_schema`.** This is
+   the method documented in the SDK reference. The current docs page also shows the newer
+   Interactions API; both satisfy the spec. The call sits behind one adapter
+   (`GeminiTransport`), so switching is local. To be confirmed with the real API.
+2. **Six grouped tasks instead of one call per category or one huge call.** This keeps
+   prompts focused (spec §7.4) and calls bounded (6 per paper).
+3. **Claims are built by the application, not the model.** The model returns items with
+   quotes; the application assigns IDs, resolves pages and decides origin from the field
+   the item sits in. The model cannot set claim IDs, origins or page numbers.
+4. **Categories are objects** (`{status, task_status, note, items...}`) rather than the
+   bare lists of the spec's conceptual JSON (§5.3), so each category carries its own
+   status.
+5. **Unlocated claims are kept, not deleted.** They carry `quote_match: not_found`, no page
+   reference and a warning; classifying them as unsupported is Phase 5's job.
+6. **Term definitions default to `general_explanation`:** a definition counts as the
+   paper's own only when the model says so explicitly (spec §4.2C).
+
+### Tests and results
+
+| Check | Result |
+|-------|--------|
+| Backend `pytest` (default) | **319 passed**, 2 skipped (opt-in integration) |
+| `ruff check` / `ruff format --check` | clean |
+| Migration upgrade, downgrade, re-upgrade on a test DB | OK |
+| Migration with existing data (base → head) | child rows kept (regression test) |
+| End-to-end with a scripted fake LLM | `analyzed`; 6 calls; 27 claims; traps handled |
+
+New test files, written in parallel by four test-writing agents limited to tests (they
+found no app bugs):
+- `test_llm_service.py` (48): retries, backoff, invalid-output re-asks, error mapping, key
+  never in errors.
+- `test_evidence_and_schemas.py` (77): normalisation, span recovery, page location,
+  schema strictness.
+- `test_extraction_agent.py` (16): referential integrity, origins, traps, failure
+  isolation, prompt safety, passage budget.
+- `test_analysis_endpoint.py` (14): stage lifecycle, `/analysis`, re-runs, fatal failures,
+  migration statuses.
+- `test_phase3_review_regressions.py` (22) and `test_migration_data.py` (1): one test per
+  confirmed review finding.
+
+The scripted fake LLM (`tests/fakes.py`) deliberately includes a fabricated quote, an
+unsupported inference, an injected claim ID, a wrong passage ID and an unsupported venue.
+All are handled: the fabricated quote gets no page, the inference is dropped, the injected
+ID is ignored, the passage is corrected, and the venue is not used.
+
+### Independent review
+
+A three-lens review (assembly, pipeline, spec and security) with an adversarial verifier
+found 21 candidates. **12 were confirmed and fixed, each with a regression test:**
+- *Critical: the migration deleted existing data.* SQLite rebuilt `documents` with
+  foreign keys on, so the cascade wiped pages, sections, chunks and runs. Migrations now
+  switch foreign keys off for the rebuild and run `foreign_key_check` afterwards. The
+  development database had not been migrated, so nothing was lost.
+- *Orphan claim* when the LLM replaced an ambiguous deterministic author value.
+- *Empty items kept* with no evidence (e.g. a bare number), and empty list entries kept,
+  including system-inferred ones.
+- *Abstract category* read `not_found` although the verbatim abstract was present.
+- *Claims always `extracted`*, even for ambiguous or partial items.
+- *Blocked prompts retried* instead of reported as blocked.
+- *Interrupted runs* left an old analysis visible, or failed a fully indexed paper.
+- *Invalid API key* (HTTP 400) reported as "bad request".
+- *Thinking tokens* missing from token counts.
+- *Page label* not escaped in the prompt; *passage-tag guard* case-sensitive.
+
+Also adopted from the verifier's "optional" list: numbers in numerical claim text, the
+safer term-definition default, the served model version per task, and author conclusions
+labelled `author_claimed`.
+
+**Not fixed (judged later-phase or design), recorded here:** checking that an LLM
+metadata value actually appears in its quote (Phase 5 entity checks); hidden PDF-metadata
+authors taking precedence over visible ones.
+
+### Acceptance criteria
+
+| Criterion | Status | Evidence |
+|-----------|--------|----------|
+| Output validates against Pydantic | ✅ (fake LLM) | Final `ExtractionResult.model_validate`; stored JSON re-validated by `/analysis` |
+| Every category has a defined status | ✅ | `status` + `task_status` on every category; tests check defaults and failures |
+| Missing data is not fabricated | ✅ (fake LLM) | Instructions + quote requirement; unlocated quotes get no page; unsupported inferences and metadata dropped |
+| Numerical results retain context | ✅ | `ResultItem` fields; numbers in claim text |
+| Claims reference evidence records | ✅ | Two-way referential-integrity tests |
+| Model access and API method verified | ⏳ **pending** | Needs `GEMINI_API_KEY`; run `scripts/verify_gemini.py`, then one full analysis |
+
+### Known bugs and limitations
+
+- **No real LLM output has been seen yet.** Prompt quality, quote accuracy and schema
+  acceptance by Gemini are unverified.
+- The LLM JSON schema uses `anyOf`/`null` and `additionalProperties: false`; whether
+  Gemini accepts every construct is part of the pending check.
+- Grounding proves a quote exists in the paper, not that it supports the claim. That
+  judgement is Phase 5.
+- Passage selection is heuristic. A category whose content is outside the selected
+  passages comes back `not_found`, which can mean "retrieval missed it".
+- Each run costs 6 LLM calls plus any retries. Costs are not estimated here because
+  pricing changes.
+- Phase 3 is not committed yet.
+
+**Open gaps from the fix re-check, accepted as limitations under Amendment A1** (none
+creates a page citation for unsupported text or loses data on a normal run):
+- Blank LLM metadata values (author names, keywords, venue) can show as `extracted`, and
+  an LLM metadata claim's status can disagree with its field.
+- If the overview task fails, the abstract category reads `not_found` although the
+  verbatim abstract is present.
+- The startup foreign-key check would block startup if a broken link already existed.
+- A re-run that was only queued when the app stopped removes the previous results.
+- A term without a definition is labelled `system_explanation`.
+- Unicode look-alike tag text in a paper is not normalised before prompting (theoretical).
+
+**Real Gemini check (2026-11-05):** the key authenticates and `gemini-3.8-flash` is listed,
+but every call returned 503 "high demand". Still to be re-run.
+
+### Next recommended task
+
+Scope was reduced by **Amendment A1** in PROJECT_CONTEXT.md (lighter process, five remaining
+steps). Next: re-run `scripts/verify_gemini.py`, then **Step 4: minimal LangGraph
+orchestration**.

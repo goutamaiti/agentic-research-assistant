@@ -1890,3 +1890,44 @@ These principles take precedence over convenience during implementation.
     explainable so the student can understand and defend the project.
 
 **End of master project specification.**
+
+------------------------------------------------------------------------
+
+# Amendment A1 — Reduced mini-project scope (approved 2026-11-05)
+
+**Reason:** this is a college mini project and the deadline has effectively passed (about
+one day left). The user approved a lighter scope and a lighter working process. This
+amendment overrides the earlier sections where they conflict; everything not mentioned
+here stays as specified. Phases 1–2 are complete and Phase 3 is implemented.
+
+## A1.1 Working process (overrides §0 items 5–7 and §19 where heavier)
+
+- Tests cover the important paths only; no exhaustive test suites.
+- One quick self-review per step; no multi-agent reviews.
+- `DEVELOPMENT_LOG.md` entries are short: what was done, test result, known limits.
+- Known minor defects may be recorded as limitations instead of fixed, if they do not
+  produce fabricated evidence or lose data.
+
+## A1.2 Remaining roadmap (replaces §17 Phases 4–10)
+
+| Step | Content | Reduced from |
+|------|---------|--------------|
+| 4. Orchestration | A minimal LangGraph graph wrapping the existing stages (process → index → extract → verify), with the existing bounded retries. No elaborate checkpointing. | Phase 4 |
+| 5. Verification | Per claim: deterministic checks (quote located, numbers in claim appear in the quote) plus one LLM judgement of support → verified / partially_supported / unsupported / contradicted / not_verifiable. | Phase 5 |
+| 6. Assistant + export | Q&A about the current paper using hybrid retrieval with RRF, page citations, insufficient-evidence answers, conversation history. Export: JSON and PDF. | Phases 6–7 |
+| 7. Frontend | Four pages: upload + processing status, analysis view, evidence/verification view, assistant. | Phase 8 |
+| 8. Evaluation + finish | 3–5 manually annotated public papers; retrieval (P@K, MRR), extraction spot-check, verification accuracy on labelled claims; sample sizes reported. Short README with install and demo steps. | Phases 9–10 |
+
+## A1.3 Dropped or deferred (not required for completion)
+
+- DOCX export (JSON and PDF remain).
+- Relational `claims` / `evidence` tables (§10.4–10.5): the validated analysis is stored as
+  JSON in `extractions.result_json`, which already holds claims and evidence with IDs.
+- LangGraph checkpoint-based workflow recovery beyond the existing interrupted-run handling.
+- Optional reranker evaluation; semantic-vs-hybrid comparison only if time allows.
+- Separate Dashboard, Paper Overview, Technical Analysis and Reports pages (merged into the
+  four pages above).
+- Evaluation on 10–20 papers (reduced to 3–5).
+
+Single-paper scope, evidence-first behaviour, no fabrication, separation of author and
+system content, and honest reporting (§23) are unchanged.

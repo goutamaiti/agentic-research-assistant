@@ -190,8 +190,14 @@ def test_analyze_indexes_paper(client: TestClient, tmp_path: Path) -> None:
     assert status["status"] == "indexed"
     assert status["workflow_run_id"] == body["workflow_run_id"]
     assert [s["stage"] for s in status["stages"]] == list(STAGES)
-    assert all(s["status"] == "completed" for s in status["stages"])
-    assert all(s["started_at"] and s["completed_at"] for s in status["stages"])
+    by_stage = {s["stage"]: s for s in status["stages"]}
+    processing_stages = [by_stage[name] for name in STAGES if name != "knowledge_extraction"]
+    assert all(s["status"] == "completed" for s in processing_stages)
+    assert all(s["started_at"] and s["completed_at"] for s in processing_stages)
+    # No LLM is configured in this client, so extraction is skipped with a reason.
+    assert by_stage["knowledge_extraction"]["status"] == "skipped"
+    assert by_stage["knowledge_extraction"]["metrics"]["reason"] == "llm_not_configured"
+    assert "extraction skipped" in status["status_detail"]
     indexing = {s["stage"]: s for s in status["stages"]}["retrieval_indexing"]["metrics"]
     assert indexing["chunks_indexed"] > 0
     assert indexing["vectors_stored"] == indexing["chunks_indexed"]
@@ -408,7 +414,9 @@ def test_recover_marks_unfinished_work_interrupted(client: TestClient, tmp_path:
         completed = session.scalars(
             select(ProcessingRun).where(ProcessingRun.document_id == done)
         ).all()
-        assert all(r.status == RunStatus.COMPLETED for r in completed)
+        # A finished run is left untouched (its skipped extraction stage included).
+        assert all(r.status in (RunStatus.COMPLETED, RunStatus.SKIPPED) for r in completed)
+        assert sum(r.status == RunStatus.SKIPPED for r in completed) == 1
     stages = _stages(client, processing)
     assert stages[STAGES[0]]["status"] == "interrupted"
 
