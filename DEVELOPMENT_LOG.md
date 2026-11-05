@@ -840,3 +840,34 @@ call; all 12 pairs stayed `pending` (none marked verified by default).
 - Re-run `scripts/verify_gemini.py`, one full analysis, and `verification_tests.py` when
   the API responds (or with OpenRouter credit).
 - Measured end-to-end timing of a real analysis on the 3-call design.
+
+---
+
+## Real Gemini verification (2026-11-05, paid tier)
+
+With a paid-tier Google key, `gemini-3.8-flash` via the Google SDK:
+
+- **`scripts/verify_gemini.py`:** OK. Full schema accepted in 1 attempt; exact quote
+  returned; planted prompt injection not followed.
+- **Full analysis of arXiv:1706.03762 (15 pages):** status `analyzed`, **125 s end to end**
+  (indexing 45 s on CPU, extraction 49 s for 3 parallel calls, verification 20 s).
+  21,109 input / 18,671 output tokens for extraction. 120 claims, 158 evidence records,
+  **157 exact quote matches, 1 not found**. All 14 categories extracted. Metadata: title
+  (deterministic); authors, year 2017 and venue (NeurIPS 2017) from the front matter with
+  quotes; DOI and keywords `not_found` (not printed in the arXiv version). Spot-checked
+  values are correct (N = 6, d_model = 512, d_ff = 2048, h = 8, d_k = 64, printed page 9).
+- **Verification of those claims:** 80 verified, 22 partially supported, 17 unsupported,
+  1 not verifiable. Sampled unsupported/partial cases are claims that add details not in
+  the specific quote cited, i.e. conservative behaviour, not verifier errors (not
+  formally evaluated).
+- **`evaluation/verification_tests.py`** (12 draft pairs): accuracy 1.000, false
+  acceptance 0/5, false rejection 0/7. Small, easy, **draft** label set: a sanity check,
+  not a reportable result.
+- **Assistant:** "What optimizer…?" → Adam with β1 = 0.9, β2 = 0.98, ε = 10⁻⁹ and the
+  warm-up schedule, cited to printed p. 7, *Optimizer* (12.9 s). "How many patients were
+  enrolled in the clinical trial?" → insufficient evidence, nothing invented (3.4 s).
+
+The Phase 3 acceptance item "model access and API method verified" is now met.
+
+**Remaining before submission:** human review of the draft labels and 2–4 more papers
+(A1); optional OpenRouter credit if that route is wanted.
