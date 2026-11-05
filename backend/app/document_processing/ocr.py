@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import io
 import logging
+import os
 import shutil
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Protocol
 
 logger = logging.getLogger(__name__)
@@ -43,7 +45,12 @@ class TesseractOcr:
         self._available: bool | None = None
 
     def _resolved_cmd(self) -> str | None:
-        return self._cmd or shutil.which("tesseract")
+        if self._cmd or shutil.which("tesseract"):
+            return self._cmd or shutil.which("tesseract")
+        # The Windows installer does not add Tesseract to PATH; try its default folder.
+        default = Path(os.environ.get("ProgramFiles", r"C:\Program Files"))
+        candidate = default / "Tesseract-OCR" / "tesseract.exe"
+        return str(candidate) if candidate.is_file() else None
 
     def is_available(self) -> bool:
         if self._available is None:

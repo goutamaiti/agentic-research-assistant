@@ -77,6 +77,22 @@ def _register_error_handlers(app: FastAPI) -> None:
         return _error(500, "internal_error", "An unexpected server error occurred.")
 
 
+def _mount_frontend(app: FastAPI) -> None:
+    """Serve the built React app (frontend/dist) at "/" when it exists.
+
+    This gives a single process and a single address for the one-click launcher. API
+    routes are registered first, so ``/api/...`` is never shadowed. During development
+    the Vite dev server is used instead and this does nothing until a build exists.
+    """
+    from fastapi.staticfiles import StaticFiles
+
+    from app.config import PROJECT_ROOT
+
+    dist = PROJECT_ROOT / "frontend" / "dist"
+    if (dist / "index.html").is_file():
+        app.mount("/", StaticFiles(directory=dist, html=True), name="frontend")
+
+
 def _default_llm_service(settings: Settings) -> LLMService | None:
     transport = build_transport(settings)
     if transport is None:
@@ -157,6 +173,8 @@ def create_app(
             )
             app.state.research_assistant = ResearchAssistant(llm, chroma_client, app.state.embedder)
             app.state.analysis_service.recover()
+            # Mounted last, at startup, so it never shadows an API route.
+            _mount_frontend(app)
             logger.info(
                 "Started %s %s (env=%s, llm_configured=%s, model=%s)",
                 APP_NAME,
