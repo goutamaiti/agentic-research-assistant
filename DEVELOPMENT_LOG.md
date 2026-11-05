@@ -678,3 +678,24 @@ but every call returned 503 "high demand". Still to be re-run.
 Scope was reduced by **Amendment A1** in PROJECT_CONTEXT.md (lighter process, five remaining
 steps). Next: re-run `scripts/verify_gemini.py`, then **Step 4: minimal LangGraph
 orchestration**.
+
+---
+
+## Step 4: Minimal LangGraph orchestration (2026-11-05, Amendment A1)
+
+**Done:** the analysis run is now a LangGraph `StateGraph`
+(`backend/app/workflows/analysis_graph.py`, state in `graph_state.py`):
+`upload_validation → document_extraction → section_identification → retrieval_indexing →
+knowledge_extraction → finalize`. Each processing stage has a conditional edge that goes
+to END on failure; knowledge extraction is non-fatal and always reaches `finalize`. The
+state carries only IDs and status (spec §9); stage logic is unchanged and still records
+progress in `processing_runs`. No loops: retries stay bounded in the LLM service. No
+checkpointing (dropped by A1; interrupted runs are still handled by `recover()`).
+
+**Tests:** 322 passed, 2 skipped. All existing pipeline tests now run through the graph;
+`tests/test_analysis_graph.py` checks node order, routing to END on failure, and that no
+document content is in the state.
+
+**Gemini:** re-tried; still HTTP 503 "high demand" on `gemini-3.8-flash`.
+
+**Next:** Step 5, verification.

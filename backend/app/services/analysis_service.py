@@ -234,54 +234,79 @@ class AnalysisService:
 
     def run(self, document_id: str, workflow_run_id: str) -> None:
         """Execute all stages of one run. Never raises: failures are recorded."""
+        from app.workflows.analysis_graph import build_analysis_graph
+
         context = _RunContext(document_id=document_id, workflow_run_id=workflow_run_id)
         self._set_document(document_id, DocumentStatus.PROCESSING, "Processing document.")
-        stages: list[tuple[str, Callable[[_RunContext], StageOutcome]]] = [
-            ("upload_validation", self._stage_upload_validation),
-            ("document_extraction", self._stage_document_extraction),
-            ("section_identification", self._stage_section_identification),
-            ("retrieval_indexing", self._stage_retrieval_indexing),
-        ]
-        later_stages = [*stages, ("knowledge_extraction", None)]
-        for position, (stage, func) in enumerate(stages):
-            self._update_stage(context, stage, status=RunStatus.RUNNING, started=True)
-            started = time.perf_counter()
-            try:
-                outcome = func(context)
-            except Exception as exc:
-                error = self._describe_error(exc)
-                logger.error(
-                    "Run %s stage %s failed: %s",
-                    workflow_run_id,
-                    stage,
-                    error["code"],
-                    exc_info=not isinstance(exc, StageFailure | PdfValidationError),
-                )
-                self._update_stage(
-                    context,
-                    stage,
-                    status=RunStatus.FAILED,
-                    completed=True,
-                    error=error,
-                    metrics={"duration_ms": _elapsed_ms(started)},
-                )
-                for skipped, _ in later_stages[position + 1 :]:
-                    self._update_stage(context, skipped, status=RunStatus.SKIPPED)
-                self._discard_stale_results(document_id, failed_stage=stage)
-                self._set_document(
-                    document_id,
-                    DocumentStatus.FAILED,
-                    f"{stage.replace('_', ' ').capitalize()} failed: {error['message']}",
-                )
-                return
-            outcome.metrics["duration_ms"] = _elapsed_ms(started)
-            self._update_stage(
-                context, stage, status=outcome.status, completed=True, metrics=outcome.metrics
-            )
+        graph = build_analysis_graph(self, context)
+        final = graph.invoke(
+            {
+                "document_id": document_id,
+                "workflow_run_id": workflow_run_id,
+                "processing_status": "running",
+                "processing_errors": [],
+                "completed_stages": [],
+            }
+        )
+        logger.info(
+            "Run %s ended (%s) for document %s",
+            workflow_run_id,
+            final.get("processing_status"),
+            document_id,
+        )
 
+    # ----- Graph node bodies --------------------------------------------------------------
+
+    def execute_processing_stage(self, context: _RunContext, stage: str) -> dict[str, str] | None:
+        """Run one fatal stage. On failure, record it, skip later stages, discard stale
+        results, mark the document failed, and return the error."""
+        functions: dict[str, Callable[[_RunContext], StageOutcome]] = {
+            "upload_validation": self._stage_upload_validation,
+            "document_extraction": self._stage_document_extraction,
+            "section_identification": self._stage_section_identification,
+            "retrieval_indexing": self._stage_retrieval_indexing,
+        }
+        self._update_stage(context, stage, status=RunStatus.RUNNING, started=True)
+        started = time.perf_counter()
+        try:
+            outcome = functions[stage](context)
+        except Exception as exc:
+            error = self._describe_error(exc)
+            logger.error(
+                "Run %s stage %s failed: %s",
+                context.workflow_run_id,
+                stage,
+                error["code"],
+                exc_info=not isinstance(exc, StageFailure | PdfValidationError),
+            )
+            self._update_stage(
+                context,
+                stage,
+                status=RunStatus.FAILED,
+                completed=True,
+                error=error,
+                metrics={"duration_ms": _elapsed_ms(started)},
+            )
+            for skipped in STAGES[STAGES.index(stage) + 1 :]:
+                self._update_stage(context, skipped, status=RunStatus.SKIPPED)
+            self._discard_stale_results(context.document_id, failed_stage=stage)
+            self._set_document(
+                context.document_id,
+                DocumentStatus.FAILED,
+                f"{stage.replace('_', ' ').capitalize()} failed: {error['message']}",
+            )
+            return error
+        outcome.metrics["duration_ms"] = _elapsed_ms(started)
+        self._update_stage(
+            context, stage, status=outcome.status, completed=True, metrics=outcome.metrics
+        )
+        return None
+
+    def execute_extraction_stage(self, context: _RunContext) -> None:
         self._run_extraction_stage(context)
-        self._set_document(document_id, *self._final_status(context))
-        logger.info("Run %s finished for document %s", workflow_run_id, document_id)
+
+    def finalize_run(self, context: _RunContext) -> None:
+        self._set_document(context.document_id, *self._final_status(context))
 
     def _run_extraction_stage(self, context: _RunContext) -> None:
         """Run knowledge extraction; failures are recorded but never fail the document."""
