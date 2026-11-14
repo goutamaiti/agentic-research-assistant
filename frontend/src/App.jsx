@@ -3,7 +3,7 @@ import AnalysisPage from './pages/AnalysisPage.jsx'
 import AssistantPage from './pages/AssistantPage.jsx'
 import EvidencePage from './pages/EvidencePage.jsx'
 import UploadPage from './pages/UploadPage.jsx'
-import { ACCESS_REQUIRED_EVENT, setAccessPassword } from './services/api.js'
+import { ACCESS_REQUIRED_EVENT, api, setAccessPassword } from './services/api.js'
 
 // Minimal hash routing: #/ , #/analysis/<id>, #/evidence/<id>, #/assistant/<id>.
 function parseHash() {
@@ -19,20 +19,19 @@ function AccessForm() {
     window.location.reload()
   }
   return (
-    <form onSubmit={submit} className="mx-auto max-w-sm rounded-lg border border-slate-200 bg-white p-6">
-      <h2 className="text-lg font-semibold">Access password</h2>
-      <p className="mt-1 text-sm text-slate-600">This deployment is protected. Enter the password you were given.</p>
-      <label htmlFor="access-password" className="mt-4 block text-sm font-medium">Password</label>
+    <form onSubmit={submit} className="access">
+      <h2>This deployment is password protected</h2>
+      <p className="muted">Enter the password you were given to open the workspace.</p>
+      <label htmlFor="access-password">Password</label>
       <input
         id="access-password"
         type="password"
         autoComplete="current-password"
         value={value}
         onChange={(event) => setValue(event.target.value)}
-        className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2"
       />
-      <button type="submit" disabled={!value} className="mt-4 rounded-md bg-slate-900 px-4 py-2 text-sm text-white disabled:opacity-50">
-        Continue
+      <button type="submit" disabled={!value} className="button primary">
+        Open workspace
       </button>
     </form>
   )
@@ -43,6 +42,45 @@ const TABS = [
   ['evidence', 'Evidence'],
   ['assistant', 'Assistant'],
 ]
+
+function PaperBar({ documentId, page, navigate }) {
+  const [title, setTitle] = useState(null)
+  useEffect(() => {
+    let cancelled = false
+    setTitle(null)
+    api
+      .getDocument(documentId)
+      .then((doc) => !cancelled && setTitle(doc.title ?? doc.original_filename))
+      .catch(() => {})
+    return () => {
+      cancelled = true
+    }
+  }, [documentId])
+
+  return (
+    <div className="paperbar">
+      <div className="paperbar-title">
+        <a href="#/" className="back">All papers</a>
+        {page !== 'analysis' && <p title={title ?? undefined}>{title ?? ' '}</p>}
+      </div>
+      <nav aria-label="Paper views" className="tabs">
+        {TABS.map(([name, label]) => (
+          <a
+            key={name}
+            href={`#/${name}/${documentId}`}
+            aria-current={page === name ? 'page' : undefined}
+            onClick={(event) => {
+              event.preventDefault()
+              navigate(`${name}/${documentId}`)
+            }}
+          >
+            {label}
+          </a>
+        ))}
+      </nav>
+    </div>
+  )
+}
 
 export default function App() {
   const [route, setRoute] = useState(parseHash)
@@ -55,7 +93,10 @@ export default function App() {
   }, [])
 
   useEffect(() => {
-    const onChange = () => setRoute(parseHash())
+    const onChange = () => {
+      setRoute(parseHash())
+      window.scrollTo(0, 0)
+    }
     window.addEventListener('hashchange', onChange)
     return () => window.removeEventListener('hashchange', onChange)
   }, [])
@@ -65,38 +106,43 @@ export default function App() {
   }, [])
 
   const { page, documentId } = route
+  const inPaper = documentId && TABS.some(([name]) => name === page)
   let content = <UploadPage navigate={navigate} />
-  if (documentId && page === 'analysis') content = <AnalysisPage documentId={documentId} />
-  if (documentId && page === 'evidence') content = <EvidencePage documentId={documentId} />
-  if (documentId && page === 'assistant') content = <AssistantPage documentId={documentId} />
+  if (inPaper && page === 'analysis') content = <AnalysisPage documentId={documentId} />
+  if (inPaper && page === 'evidence') content = <EvidencePage documentId={documentId} />
+  if (inPaper && page === 'assistant') content = <AssistantPage documentId={documentId} />
   if (needsPassword) content = <AccessForm />
 
+  useEffect(() => {
+    const names = { analysis: 'Analysis', evidence: 'Evidence', assistant: 'Assistant' }
+    document.title = `${inPaper ? `${names[page]} – ` : ''}Agentic Research Assistant`
+  }, [inPaper, page])
+
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-900">
-      <header className="border-b border-slate-200 bg-white">
-        <div className="mx-auto flex max-w-4xl flex-wrap items-center justify-between gap-3 px-4 py-4">
-          <button type="button" onClick={() => navigate('')} className="text-left">
-            <h1 className="text-xl font-semibold">Agentic Research Assistant</h1>
-            <p className="text-sm text-slate-600">Single-paper analysis with evidence-supported extraction.</p>
-          </button>
-          {documentId && (
-            <nav className="flex gap-1" aria-label="Paper views">
-              {TABS.map(([name, label]) => (
-                <button
-                  key={name}
-                  type="button"
-                  onClick={() => navigate(`${name}/${documentId}`)}
-                  aria-current={page === name ? 'page' : undefined}
-                  className={`rounded-md px-3 py-1.5 text-sm ${page === name ? 'bg-slate-900 text-white' : 'text-slate-700 hover:bg-slate-100'}`}
-                >
-                  {label}
-                </button>
-              ))}
-            </nav>
-          )}
+    <>
+      <a href="#main" className="skip" onClick={(e) => { e.preventDefault(); document.getElementById('main')?.focus() }}>
+        Skip to content
+      </a>
+      <header className="masthead">
+        <div className="wrap">
+          <a href="#/" className="wordmark" onClick={(e) => { e.preventDefault(); navigate('') }}>
+            <svg width="22" height="22" viewBox="0 0 22 22" aria-hidden="true" focusable="false">
+              <rect x="2" y="2" width="12" height="18" rx="1.5" fill="var(--page)" stroke="currentColor" strokeWidth="1.6" />
+              <rect x="5" y="9" width="6" height="3.2" fill="var(--marker)" />
+              <path d="M16 11h5" stroke="var(--accent)" strokeWidth="1.8" strokeLinecap="round" />
+            </svg>
+            Agentic Research Assistant
+          </a>
         </div>
       </header>
-      <main className="mx-auto max-w-4xl px-4 py-8">{content}</main>
-    </div>
+      {inPaper && !needsPassword && (
+        <div className="wrap">
+          <PaperBar documentId={documentId} page={page} navigate={navigate} />
+        </div>
+      )}
+      <main id="main" tabIndex={-1} className="wrap main">
+        {content}
+      </main>
+    </>
   )
 }

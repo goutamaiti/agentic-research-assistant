@@ -1,38 +1,122 @@
-// Statuses are always shown as text plus a symbol, never by colour alone (spec §12.4).
-const STYLES = {
-  verified: ['✓', 'Verified', 'bg-emerald-50 text-emerald-800 ring-emerald-600/30'],
-  partially_supported: ['◐', 'Partially supported', 'bg-amber-50 text-amber-900 ring-amber-600/30'],
-  unsupported: ['✕', 'Unsupported', 'bg-red-50 text-red-800 ring-red-600/30'],
-  contradicted: ['⚠', 'Contradicted', 'bg-red-100 text-red-900 ring-red-700/40'],
-  not_verifiable: ['?', 'Not verifiable', 'bg-slate-100 text-slate-700 ring-slate-500/30'],
-  pending: ['…', 'Pending', 'bg-slate-50 text-slate-600 ring-slate-400/30'],
-  extracted: ['✓', 'Extracted', 'bg-emerald-50 text-emerald-800 ring-emerald-600/30'],
-  partially_extracted: ['◐', 'Partially extracted', 'bg-amber-50 text-amber-900 ring-amber-600/30'],
-  ambiguous: ['?', 'Ambiguous', 'bg-amber-50 text-amber-900 ring-amber-600/30'],
-  not_found: ['–', 'Not found in paper', 'bg-slate-100 text-slate-600 ring-slate-400/30'],
-  failed: ['✕', 'Could not be processed', 'bg-red-50 text-red-800 ring-red-600/30'],
-  completed: ['✓', 'Completed', 'bg-emerald-50 text-emerald-800 ring-emerald-600/30'],
-  partial: ['◐', 'Partial', 'bg-amber-50 text-amber-900 ring-amber-600/30'],
-  running: ['⟳', 'Running', 'bg-sky-50 text-sky-800 ring-sky-600/30'],
-  skipped: ['–', 'Skipped', 'bg-slate-100 text-slate-600 ring-slate-400/30'],
-  interrupted: ['!', 'Interrupted', 'bg-amber-50 text-amber-900 ring-amber-600/30'],
-  indexed: ['✓', 'Indexed', 'bg-sky-50 text-sky-800 ring-sky-600/30'],
-  partially_indexed: ['◐', 'Partially indexed', 'bg-amber-50 text-amber-900 ring-amber-600/30'],
-  analyzed: ['✓', 'Analysed', 'bg-emerald-50 text-emerald-800 ring-emerald-600/30'],
-  partially_analyzed: ['◐', 'Partially analysed', 'bg-amber-50 text-amber-900 ring-amber-600/30'],
-  uploaded: ['•', 'Uploaded', 'bg-slate-50 text-slate-700 ring-slate-400/30'],
-  queued: ['…', 'Queued', 'bg-slate-50 text-slate-700 ring-slate-400/30'],
-  processing: ['⟳', 'Processing', 'bg-sky-50 text-sky-800 ring-sky-600/30'],
+// A status is always a shape plus a word, never colour alone.
+// [shape, label, tone]
+const STATUS = {
+  verified: ['check', 'Verified', 'good'],
+  partially_supported: ['half', 'Partially supported', 'mid'],
+  unsupported: ['cross', 'Unsupported', 'bad'],
+  contradicted: ['warn', 'Contradicted', 'bad'],
+  not_verifiable: ['dashed', 'Not verifiable', 'neutral'],
+  pending: ['clock', 'Pending', 'neutral'],
+  extracted: ['check', 'Extracted', 'good'],
+  partially_extracted: ['half', 'Partially extracted', 'mid'],
+  ambiguous: ['dashed', 'Ambiguous', 'mid'],
+  not_found: ['dash', 'Not found in paper', 'neutral'],
+  failed: ['cross', 'Could not be processed', 'bad'],
+  completed: ['check', 'Completed', 'good'],
+  partial: ['half', 'Partial', 'mid'],
+  running: ['run', 'Running', 'info'],
+  skipped: ['dash', 'Skipped', 'neutral'],
+  interrupted: ['warn', 'Interrupted', 'mid'],
+  indexed: ['check', 'Indexed', 'info'],
+  partially_indexed: ['half', 'Partially indexed', 'mid'],
+  analyzed: ['check', 'Analysed', 'good'],
+  partially_analyzed: ['half', 'Partially analysed', 'mid'],
+  uploaded: ['dot', 'Uploaded', 'neutral'],
+  queued: ['clock', 'Queued', 'neutral'],
+  processing: ['run', 'Processing', 'info'],
+  ok: ['check', 'OK', 'good'],
+  configured: ['dot', 'Configured, not contacted', 'info'],
+  not_configured: ['warn', 'Not configured', 'mid'],
+  error: ['cross', 'Error', 'bad'],
 }
 
-export default function StatusBadge({ status }) {
-  const [symbol, label, className] = STYLES[status] ?? ['•', status ?? 'unknown', STYLES.pending[2]]
+export function statusLabel(status) {
+  return STATUS[status]?.[1] ?? status ?? 'Unknown'
+}
+
+export function statusTone(status) {
+  return STATUS[status]?.[2] ?? 'neutral'
+}
+
+export function StatusGlyph({ status, size = 16 }) {
+  const shape = STATUS[status]?.[0] ?? 'dot'
+  const line = { fill: 'none', stroke: 'currentColor', strokeWidth: 1.6, strokeLinecap: 'round', strokeLinejoin: 'round' }
+  let body
+  switch (shape) {
+    case 'check':
+      body = (
+        <>
+          <circle cx="8" cy="8" r="7" fill="currentColor" />
+          <path d="M4.8 8.3l2.2 2.2 4.2-4.6" {...line} stroke="var(--glyph-ink)" />
+        </>
+      )
+      break
+    case 'half':
+      body = (
+        <>
+          <circle cx="8" cy="8" r="6.2" {...line} />
+          <path d="M8 1.8a6.2 6.2 0 0 0 0 12.4z" fill="currentColor" />
+        </>
+      )
+      break
+    case 'cross':
+      body = (
+        <>
+          <circle cx="8" cy="8" r="6.2" {...line} />
+          <path d="M5.6 5.6l4.8 4.8M10.4 5.6l-4.8 4.8" {...line} />
+        </>
+      )
+      break
+    case 'warn':
+      body = (
+        <>
+          <path d="M8 1.8L14.6 13.4H1.4z" {...line} />
+          <path d="M8 6.2v3.3M8 11.4v.1" {...line} />
+        </>
+      )
+      break
+    case 'dashed':
+      body = (
+        <>
+          <circle cx="8" cy="8" r="6.2" {...line} strokeDasharray="2.2 2.2" />
+          <circle cx="8" cy="8" r="1" fill="currentColor" />
+        </>
+      )
+      break
+    case 'clock':
+      body = (
+        <>
+          <circle cx="8" cy="8" r="6.2" {...line} />
+          <path d="M8 4.6V8l2.3 1.5" {...line} />
+        </>
+      )
+      break
+    case 'run':
+      body = <path d="M8 1.8a6.2 6.2 0 1 0 6.2 6.2" {...line} className="glyph-spin" />
+      break
+    case 'dash':
+      body = (
+        <>
+          <circle cx="8" cy="8" r="6.2" {...line} />
+          <path d="M5.2 8h5.6" {...line} />
+        </>
+      )
+      break
+    default:
+      body = <circle cx="8" cy="8" r="2.6" fill="currentColor" />
+  }
   return (
-    <span
-      className={`inline-flex shrink-0 items-center gap-1 rounded-md px-2 py-0.5 text-xs font-medium ring-1 ring-inset ${className}`}
-    >
-      <span aria-hidden="true">{symbol}</span>
-      {label}
+    <svg className="glyph" width={size} height={size} viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+      {body}
+    </svg>
+  )
+}
+
+export default function StatusBadge({ status, label }) {
+  return (
+    <span className="status" data-tone={statusTone(status)}>
+      <StatusGlyph status={status} />
+      <span>{label ?? statusLabel(status)}</span>
     </span>
   )
 }

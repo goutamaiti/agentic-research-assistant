@@ -1,16 +1,17 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import ErrorNotice from '../components/ErrorNotice.jsx'
 import HealthStatus from '../components/HealthStatus.jsx'
 import StatusBadge from '../components/StatusBadge.jsx'
 import { api, getHealth } from '../services/api.js'
 
 const ACTIVE = ['queued', 'processing']
 const STAGE_LABELS = {
-  upload_validation: 'Upload validation',
-  document_extraction: 'Document extraction',
-  section_identification: 'Section identification',
-  retrieval_indexing: 'Retrieval indexing',
-  knowledge_extraction: 'Knowledge extraction',
-  evidence_verification: 'Evidence verification',
+  upload_validation: 'Check the upload',
+  document_extraction: 'Read the PDF',
+  section_identification: 'Find the sections',
+  retrieval_indexing: 'Index the text for search',
+  knowledge_extraction: 'Extract claims',
+  evidence_verification: 'Verify claims against quotes',
 }
 
 function Stages({ documentId, onDone }) {
@@ -39,19 +40,18 @@ function Stages({ documentId, onDone }) {
     }
   }, [documentId, onDone])
 
-  if (error) return <p className="text-sm text-red-700">{error.message}</p>
-  if (!status) return <p className="text-sm text-slate-500">Loading status…</p>
+  if (error) return <ErrorNotice error={error} title="Progress could not be loaded" />
+  if (!status) return <p className="muted small" role="status">Loading progress</p>
   return (
-    <div className="mt-3 space-y-2">
-      <p className="text-sm text-slate-700">{status.status_detail}</p>
-      <ol className="divide-y divide-slate-100 rounded-md border border-slate-200">
-        {status.stages.map((stage) => (
-          <li key={stage.stage} className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 text-sm">
-            <span>{STAGE_LABELS[stage.stage] ?? stage.stage}</span>
-            <span className="flex items-center gap-2">
-              {stage.error && <span className="text-xs text-red-700">{stage.error.message}</span>}
-              <StatusBadge status={stage.status} />
-            </span>
+    <div className="stages">
+      <p className="small">{status.status_detail}</p>
+      <ol>
+        {status.stages.map((stage, index) => (
+          <li key={stage.stage} data-state={stage.status}>
+            <span className="stage-n">{index + 1}</span>
+            <span className="stage-label">{STAGE_LABELS[stage.stage] ?? stage.stage.replaceAll('_', ' ')}</span>
+            <StatusBadge status={stage.status} />
+            {stage.error && <span className="stage-error">{stage.error.message}</span>}
           </li>
         ))}
       </ol>
@@ -59,13 +59,65 @@ function Stages({ documentId, onDone }) {
   )
 }
 
+function PaperRow({ doc, selected, onSelect, navigate, onReanalyze, onDone }) {
+  const analysed = ['analyzed', 'partially_analyzed'].includes(doc.status)
+  const askable = !['uploaded', 'queued', 'processing', 'failed'].includes(doc.status)
+  const busy = ACTIVE.includes(doc.status)
+  return (
+    <li className="paper">
+      <div className="paper-main">
+        <h3>
+          {analysed ? (
+            <a href={`#/analysis/${doc.id}`} onClick={(e) => { e.preventDefault(); navigate(`analysis/${doc.id}`) }}>
+              {doc.title ?? doc.original_filename}
+            </a>
+          ) : (
+            doc.title ?? doc.original_filename
+          )}
+        </h3>
+        <p className="muted small">
+          {doc.title ? `${doc.original_filename}, ` : ''}{doc.page_count} {doc.page_count === 1 ? 'page' : 'pages'}
+        </p>
+        <StatusBadge status={doc.status} />
+      </div>
+      <div className="paper-actions">
+        {analysed && (
+          <>
+            <button type="button" className="link-button" onClick={() => navigate(`analysis/${doc.id}`)}>Open analysis</button>
+            <button type="button" className="link-button" onClick={() => navigate(`evidence/${doc.id}`)}>Check evidence</button>
+          </>
+        )}
+        {askable && (
+          <button type="button" className="link-button" onClick={() => navigate(`assistant/${doc.id}`)}>Ask questions</button>
+        )}
+        {!busy && (
+          <button type="button" className="link-button quiet" onClick={() => onReanalyze(doc.id)}>Analyse again</button>
+        )}
+        <button
+          type="button"
+          className="link-button quiet"
+          aria-expanded={selected}
+          onClick={() => onSelect(selected ? null : doc.id)}
+        >
+          {selected ? 'Hide progress' : 'Show progress'}
+        </button>
+      </div>
+      {selected && <Stages documentId={doc.id} onDone={onDone} />}
+    </li>
+  )
+}
+
 export default function UploadPage({ navigate }) {
   const [documents, setDocuments] = useState([])
+  const [loadedList, setLoadedList] = useState(false)
   const [selected, setSelected] = useState(null)
   const [message, setMessage] = useState(null)
   const [busy, setBusy] = useState(false)
+  const [dragging, setDragging] = useState(false)
+  const [fileName, setFileName] = useState('')
   const [health, setHealth] = useState(null)
   const [healthError, setHealthError] = useState(null)
+  const [checking, setChecking] = useState(false)
   const fileInput = useRef(null)
 
   const refresh = useCallback(async () => {
@@ -73,15 +125,20 @@ export default function UploadPage({ navigate }) {
       setDocuments(await api.listDocuments())
     } catch (err) {
       setMessage({ kind: 'error', text: err.message })
+    } finally {
+      setLoadedList(true)
     }
   }, [])
 
   const checkHealth = useCallback(async () => {
+    setChecking(true)
     try {
       setHealth(await getHealth())
       setHealthError(null)
     } catch (err) {
       setHealthError(err)
+    } finally {
+      setChecking(false)
     }
   }, [])
 
@@ -90,20 +147,32 @@ export default function UploadPage({ navigate }) {
     checkHealth()
   }, [refresh, checkHealth])
 
+  // Show live progress for anything already running when the page opens.
+  useEffect(() => {
+    if (selected === null) {
+      const running = documents.find((d) => ACTIVE.includes(d.status))
+      if (running) setSelected(running.id)
+    }
+  }, [documents, selected])
+
   const upload = async (event) => {
     event.preventDefault()
     const file = fileInput.current?.files?.[0]
-    if (!file) return
+    if (!file) {
+      setMessage({ kind: 'error', text: 'Choose a PDF first.' })
+      return
+    }
     setBusy(true)
     setMessage(null)
     try {
       const document = await api.uploadDocument(file)
       await api.analyze(document.id)
       setSelected(document.id)
-      setMessage({ kind: 'ok', text: `Uploaded ${document.original_filename}; analysis started.` })
+      setMessage({ kind: 'ok', text: `Uploaded ${document.original_filename}. Analysis has started.` })
       fileInput.current.value = ''
+      setFileName('')
     } catch (err) {
-      const existing = err.code === 'duplicate_document' ? ' Open it from the list below.' : ''
+      const existing = err.code === 'duplicate_document' ? ' Open it from the list of papers.' : ''
       setMessage({ kind: 'error', text: err.message + existing })
     } finally {
       setBusy(false)
@@ -115,68 +184,82 @@ export default function UploadPage({ navigate }) {
     try {
       await api.analyze(id)
       setSelected(id)
+      setMessage(null)
       refresh()
     } catch (err) {
       setMessage({ kind: 'error', text: err.message })
     }
   }
 
+  const onDrop = (event) => {
+    event.preventDefault()
+    setDragging(false)
+    const file = event.dataTransfer.files?.[0]
+    if (file && fileInput.current) {
+      const transfer = new DataTransfer()
+      transfer.items.add(file)
+      fileInput.current.files = transfer.files
+      setFileName(file.name)
+    }
+  }
+
   return (
-    <div className="space-y-6">
-      <section className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
-        <h2 className="text-lg font-semibold">Upload a research paper</h2>
-        <p className="mt-1 text-sm text-slate-600">One PDF per workspace (max 30 MB).</p>
-        <form onSubmit={upload} className="mt-4 flex flex-wrap items-center gap-3">
-          <input ref={fileInput} type="file" accept="application/pdf,.pdf" className="text-sm" />
-          <button
-            type="submit"
-            disabled={busy}
-            className="rounded-md bg-slate-900 px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
-          >
-            {busy ? 'Uploading…' : 'Upload and analyse'}
-          </button>
-        </form>
-        {message && (
-          <p role="status" className={`mt-3 text-sm ${message.kind === 'error' ? 'text-red-700' : 'text-emerald-800'}`}>
-            {message.text}
+    <div className="home">
+      <HealthStatus health={null} error={healthError} loading={checking} onRetry={checkHealth} />
+
+      <div className="home-grid">
+        <section className="intake" aria-labelledby="intake-heading">
+          <h2 id="intake-heading">Analyse a paper</h2>
+          <p>
+            Upload one PDF, up to 30 MB. Every claim the assistant extracts is tied to a quote and a page number from the paper.
           </p>
-        )}
-      </section>
+          <form onSubmit={upload}>
+            <label
+              className="drop"
+              data-dragging={dragging ? 'yes' : 'no'}
+              onDragOver={(e) => { e.preventDefault(); setDragging(true) }}
+              onDragLeave={() => setDragging(false)}
+              onDrop={onDrop}
+            >
+              <input
+                ref={fileInput}
+                type="file"
+                accept="application/pdf,.pdf"
+                onChange={(e) => setFileName(e.target.files?.[0]?.name ?? '')}
+              />
+              <span className="drop-main">{fileName || 'Drop a PDF here'}</span>
+              <span className="drop-sub">{fileName ? 'Choose a different file' : 'or choose a file from your computer'}</span>
+            </label>
+            <button type="submit" disabled={busy} className="button primary">
+              {busy ? 'Uploading' : 'Upload and analyse'}
+            </button>
+          </form>
+          {message && message.kind === 'error' && <ErrorNotice error={{ message: message.text }} title="Upload failed" hint="Fix the problem above and try again." />}
+          {message && message.kind === 'ok' && <p role="status" className="ok-text">{message.text}</p>}
+        </section>
 
-      <section className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
-        <h2 className="text-lg font-semibold">Paper workspaces</h2>
-        {documents.length === 0 && <p className="mt-2 text-sm text-slate-500">No papers yet.</p>}
-        <ul className="mt-3 divide-y divide-slate-100">
-          {documents.map((doc) => (
-            <li key={doc.id} className="py-3">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <button type="button" className="text-left" onClick={() => setSelected(doc.id === selected ? null : doc.id)}>
-                  <span className="font-medium text-slate-900">{doc.title ?? doc.original_filename}</span>
-                  <span className="ml-2 text-xs text-slate-500">{doc.page_count} pages</span>
-                </button>
-                <span className="flex flex-wrap items-center gap-2">
-                  <StatusBadge status={doc.status} />
-                  {['analyzed', 'partially_analyzed'].includes(doc.status) && (
-                    <>
-                      <button type="button" className="text-sm text-sky-700 underline" onClick={() => navigate(`analysis/${doc.id}`)}>Analysis</button>
-                      <button type="button" className="text-sm text-sky-700 underline" onClick={() => navigate(`evidence/${doc.id}`)}>Evidence</button>
-                    </>
-                  )}
-                  {!['uploaded', 'queued', 'processing', 'failed'].includes(doc.status) && (
-                    <button type="button" className="text-sm text-sky-700 underline" onClick={() => navigate(`assistant/${doc.id}`)}>Assistant</button>
-                  )}
-                  {!ACTIVE.includes(doc.status) && (
-                    <button type="button" className="text-sm text-slate-600 underline" onClick={() => reanalyze(doc.id)}>Analyse again</button>
-                  )}
-                </span>
-              </div>
-              {selected === doc.id && <Stages documentId={doc.id} onDone={refresh} />}
-            </li>
-          ))}
-        </ul>
-      </section>
+        <section className="library" aria-labelledby="library-heading">
+          <h2 id="library-heading">Your papers</h2>
+          {loadedList && documents.length === 0 && (
+            <p className="muted">No papers yet. Upload a PDF to see its analysis here.</p>
+          )}
+          <ul className="papers">
+            {documents.map((doc) => (
+              <PaperRow
+                key={doc.id}
+                doc={doc}
+                selected={selected === doc.id}
+                onSelect={setSelected}
+                navigate={navigate}
+                onReanalyze={reanalyze}
+                onDone={refresh}
+              />
+            ))}
+          </ul>
+        </section>
+      </div>
 
-      <HealthStatus health={health} error={healthError} loading={false} onRetry={checkHealth} />
+      <HealthStatus health={health} error={null} loading={checking} onRetry={checkHealth} />
     </div>
   )
 }

@@ -33,3 +33,8 @@ Thumbs.db
 
 # Development-only fake server data (backend/scripts/dev_fake_server.py)
 storage_dev_fake/
+
+# Local notes and exports (never commit)
+Keys.txt
+*Project Explanation*.pdf
+frontend/design-screenshots/

@@ -1,21 +1,70 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import ErrorNotice from '../components/ErrorNotice.jsx'
+import Sheet from '../components/Sheet.jsx'
+import { StatusGlyph } from '../components/StatusBadge.jsx'
 import { api } from '../services/api.js'
 
-function Citations({ citations }) {
-  if (!citations?.length) return null
+const SUGGESTIONS = [
+  'What problem does this paper address?',
+  'Which datasets were used?',
+  'What limitations do the authors acknowledge?',
+]
+
+function citationFolio(c) {
+  return c.displayed_page_number ? `p. ${c.displayed_page_number}` : `PDF page ${c.pdf_page_index + 1}`
+}
+
+function Citation({ citation }) {
+  const [open, setOpen] = useState(false)
   return (
-    <ul className="mt-2 space-y-1">
-      {citations.map((c) => (
-        <li key={c.passage_id + c.chunk_id}>
-          <details className="text-xs text-slate-600">
-            <summary className="cursor-pointer">
-              Page {c.displayed_page_number ?? `PDF ${c.pdf_page_index}`} · {c.section_name ?? 'section unknown'}
-            </summary>
-            <p className="mt-1 border-l-4 border-slate-300 pl-3 text-slate-700">{c.text}</p>
-          </details>
-        </li>
-      ))}
-    </ul>
+    <li className="cite" data-open={open ? 'yes' : 'no'}>
+      <button type="button" className="cite-toggle" aria-expanded={open} onClick={() => setOpen((v) => !v)}>
+        <span className="cite-folio">{citationFolio(citation)}</span>
+        <span>{citation.section_name ?? 'Section unknown'}</span>
+        <span className="sr-only">{open ? 'Hide passage' : 'Show passage'}</span>
+      </button>
+      <div className="cite-panel">
+        <div className="entry-quotes-inner">
+          <Sheet text={citation.text} folio={citationFolio(citation)} section={citation.section_name} />
+        </div>
+      </div>
+    </li>
+  )
+}
+
+function Message({ message }) {
+  if (message.role === 'user') {
+    return (
+      <li className="msg user">
+        <p className="msg-who">You asked</p>
+        <p className="msg-text">{message.content}</p>
+      </li>
+    )
+  }
+  return (
+    <li className="msg assistant">
+      <p className="msg-who">Answer</p>
+      {message.insufficient_evidence && (
+        <p className="notice" data-tone="mid">
+          <StatusGlyph status="dashed" />
+          <span><strong>Not enough evidence in the paper.</strong> The paper does not say enough to answer this reliably.</span>
+        </p>
+      )}
+      <p className="msg-text">{message.content}</p>
+      {message.citations?.length > 0 && (
+        <ul className="cites" aria-label="Citations">
+          {message.citations.map((c) => (
+            <Citation key={`${c.passage_id}-${c.chunk_id}`} citation={c} />
+          ))}
+        </ul>
+      )}
+      {message.general_explanation && (
+        <aside className="general">
+          <p className="general-label">General background, not from the paper</p>
+          <p>{message.general_explanation}</p>
+        </aside>
+      )}
+    </li>
   )
 }
 
@@ -24,7 +73,9 @@ export default function AssistantPage({ documentId }) {
   const [conversationId, setConversationId] = useState(null)
   const [question, setQuestion] = useState('')
   const [busy, setBusy] = useState(false)
+  const [loaded, setLoaded] = useState(false)
   const [error, setError] = useState(null)
+  const endRef = useRef(null)
 
   useEffect(() => {
     api
@@ -34,12 +85,16 @@ export default function AssistantPage({ documentId }) {
         setConversationId(history.conversation_id)
       })
       .catch(setError)
+      .finally(() => setLoaded(true))
   }, [documentId])
 
-  const ask = async (event) => {
-    event.preventDefault()
-    const text = question.trim()
-    if (!text) return
+  useEffect(() => {
+    if (messages.length > 0 || busy) endRef.current?.scrollIntoView({ block: 'end' })
+  }, [messages, busy])
+
+  const send = async (raw) => {
+    const text = raw.trim()
+    if (!text || busy) return
     setBusy(true)
     setError(null)
     setMessages((current) => [...current, { role: 'user', content: text, citations: [] }])
@@ -64,43 +119,67 @@ export default function AssistantPage({ documentId }) {
     }
   }
 
+  const submit = (event) => {
+    event.preventDefault()
+    send(question)
+  }
+
+  const onKeyDown = (event) => {
+    if (event.key === 'Enter' && !event.shiftKey) {
+      event.preventDefault()
+      send(question)
+    }
+  }
+
   return (
-    <div className="space-y-4">
-      <section className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
-        <h2 className="text-lg font-semibold">Research assistant</h2>
-        <p className="mt-1 text-sm text-slate-600">
-          Answers use only this paper and cite the pages they come from.
-        </p>
-        <ul className="mt-4 space-y-3">
-          {messages.map((m, index) => (
-            <li key={index} className={`rounded-md p-3 text-sm ${m.role === 'user' ? 'bg-slate-100' : 'border border-slate-200'}`}>
-              <p className="text-xs font-medium uppercase text-slate-500">{m.role === 'user' ? 'You' : 'Assistant'}</p>
-              <p className="mt-1 whitespace-pre-wrap">{m.content}</p>
-              {m.insufficient_evidence && (
-                <p className="mt-1 text-xs font-medium text-amber-800">! Insufficient evidence in the paper</p>
-              )}
-              {m.general_explanation && (
-                <p className="mt-2 rounded bg-amber-50 p-2 text-xs text-amber-900">
-                  General explanation (not from the paper): {m.general_explanation}
-                </p>
-              )}
-              <Citations citations={m.citations} />
-            </li>
-          ))}
-        </ul>
-        {error && <p role="alert" className="mt-3 text-sm text-red-700">{error.message}</p>}
-        <form onSubmit={ask} className="mt-4 flex gap-2">
-          <input
-            value={question}
-            onChange={(e) => setQuestion(e.target.value)}
-            placeholder="Ask about this paper…"
-            className="flex-1 rounded-md border border-slate-300 px-3 py-2 text-sm"
-          />
-          <button type="submit" disabled={busy} className="rounded-md bg-slate-900 px-4 py-2 text-sm font-medium text-white disabled:opacity-50">
-            {busy ? 'Thinking…' : 'Ask'}
-          </button>
-        </form>
-      </section>
+    <div className="assistant">
+      <header className="assistant-head">
+        <h2>Ask this paper</h2>
+        <p className="muted">Answers use only the paper and cite the pages they come from. If the paper does not say, the assistant says so.</p>
+      </header>
+
+      {loaded && messages.length === 0 && !error && (
+        <div className="suggestions">
+          <p>Start with a question:</p>
+          <ul>
+            {SUGGESTIONS.map((s) => (
+              <li key={s}>
+                <button type="button" className="chip" onClick={() => send(s)} disabled={busy}>{s}</button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      <ol className="transcript">
+        {messages.map((m, index) => (
+          <Message key={index} message={m} />
+        ))}
+        {busy && (
+          <li className="msg assistant" role="status">
+            <p className="msg-who">Answer</p>
+            <p className="msg-text muted">Reading the paper</p>
+          </li>
+        )}
+      </ol>
+      <div ref={endRef} />
+
+      {error && <ErrorNotice error={error} title="The question could not be answered" hint="Your question was not saved. Check your connection and ask again." />}
+
+      <form onSubmit={submit} className="composer">
+        <label htmlFor="question" className="sr-only">Your question about this paper</label>
+        <textarea
+          id="question"
+          rows={2}
+          value={question}
+          onChange={(e) => setQuestion(e.target.value)}
+          onKeyDown={onKeyDown}
+          placeholder="Ask a question about this paper"
+        />
+        <button type="submit" className="button primary" disabled={busy || !question.trim()}>
+          {busy ? 'Answering' : 'Ask question'}
+        </button>
+      </form>
     </div>
   )
 }
