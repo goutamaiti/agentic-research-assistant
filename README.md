@@ -31,7 +31,23 @@ PyTorch installs very deep file paths, and Windows refuses paths over 260 charac
 [long paths are enabled](https://pip.pypa.io/warnings/enable-long-paths); `run.bat` checks
 this and tells you if the folder needs moving.
 
+## Share it from your PC (free, Cloudflare Tunnel)
+
+Gives a friend a public link to the app running on your computer. No account or hosting
+needed; the link works only while your PC and the window are on, and changes each time.
+
+1. Install the tunnel program once: `winget install --id Cloudflare.cloudflared`
+2. Add a password line to `backend/.env`, e.g. `ACCESS_PASSWORD=choose-a-password`
+   (required: anyone with the link would otherwise spend your Gemini credit).
+3. Double-click **`share.bat`**. A second window prints the public link
+   (`https://<random>.trycloudflare.com`); send it together with the password.
+
+Close both windows to stop sharing.
+
 ## Put it online (Hugging Face Spaces)
+
+Note: Hugging Face now requires a paid PRO plan for Docker Spaces.
+
 
 The repository includes a `Dockerfile` that runs the whole app in one container
 (API + web interface, Tesseract included, embedding model baked in). Free Hugging Face
